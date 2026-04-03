@@ -10,7 +10,24 @@ const packageDir = path.resolve(moduleDir, "..");
 dotenv.config({ path: path.join(packageDir, ".env") });
 dotenv.config();
 
-export type ChannelName = "telegram" | "slack";
+export type ChannelName = "telegram" | "slack" | "feishu" | "mattermost";
+
+export type FeishuIdentity = {
+  id: string;
+  appId: string;
+  appSecret: string;
+  enabled?: boolean;
+  directory?: string;
+  domain?: "feishu" | "lark";
+};
+
+export type MattermostIdentity = {
+  id: string;
+  serverUrl: string;
+  accessToken: string;
+  enabled?: boolean;
+  directory?: string;
+};
 
 export type TelegramIdentity = {
   id: string;
@@ -54,6 +71,14 @@ export type OpenCodeRouterConfigFile = {
       botToken?: string;
       appToken?: string;
     };
+    feishu?: {
+      enabled?: boolean;
+      apps?: FeishuIdentity[];
+    };
+    mattermost?: {
+      enabled?: boolean;
+      bots?: MattermostIdentity[];
+    };
   };
 };
 
@@ -72,6 +97,8 @@ export type Config = {
   model?: ModelRef;
   telegramBots: TelegramIdentity[];
   slackApps: SlackIdentity[];
+  feishuApps: FeishuIdentity[];
+  mattermostBots: MattermostIdentity[];
   dataDir: string;
   dbPath: string;
   logFile: string;
@@ -225,6 +252,68 @@ function coerceSlackApps(file: OpenCodeRouterConfigFile): SlackIdentity[] {
   return [];
 }
 
+function coerceFeishuApps(file: OpenCodeRouterConfigFile): FeishuIdentity[] {
+  const feishu = file.channels?.feishu;
+  const apps = Array.isArray((feishu as any)?.apps) ? ((feishu as any).apps as unknown[]) : [];
+  const normalized: FeishuIdentity[] = [];
+  for (const entry of apps) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const appId = typeof record.appId === "string" ? record.appId.trim() : "";
+    const appSecret = typeof record.appSecret === "string" ? record.appSecret.trim() : "";
+    if (!appId || !appSecret) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    const domainRaw = typeof record.domain === "string" ? record.domain.trim().toLowerCase() : "";
+    const domain: "feishu" | "lark" = domainRaw === "lark" ? "lark" : "feishu";
+    normalized.push({
+      id,
+      appId,
+      appSecret,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+      domain,
+    });
+  }
+  return normalized;
+}
+
+function coerceMattermostBots(file: OpenCodeRouterConfigFile): MattermostIdentity[] {
+  const mattermost = file.channels?.mattermost;
+  const bots = Array.isArray((mattermost as any)?.bots) ? ((mattermost as any).bots as unknown[]) : [];
+  const normalized: MattermostIdentity[] = [];
+  for (const entry of bots) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const serverUrl = typeof record.serverUrl === "string" ? record.serverUrl.trim() : "";
+    const accessToken = typeof record.accessToken === "string" ? record.accessToken.trim() : "";
+    if (!serverUrl || !accessToken) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    normalized.push({
+      id,
+      serverUrl,
+      accessToken,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+    });
+  }
+  if (normalized.length) return normalized;
+
+  // Legacy single-bot migration (in-memory).
+  const legacyServerUrl = typeof (mattermost as any)?.serverUrl === "string" ? String((mattermost as any).serverUrl).trim() : "";
+  const legacyAccessToken = typeof (mattermost as any)?.accessToken === "string" ? String((mattermost as any).accessToken).trim() : "";
+  if (legacyServerUrl && legacyAccessToken) {
+    return [{
+      id: "default",
+      serverUrl: legacyServerUrl,
+      accessToken: legacyAccessToken,
+      enabled: true,
+    }];
+  }
+  return [];
+}
+
 export function loadConfig(
   env: EnvLike = process.env,
   options: { requireOpencode?: boolean } = {},
@@ -250,6 +339,8 @@ export function loadConfig(
   // for single-identity setups.
   const telegramBots = coerceTelegramBots(configFile);
   const slackApps = coerceSlackApps(configFile);
+  const feishuApps = coerceFeishuApps(configFile);
+  const mattermostBots = coerceMattermostBots(configFile);
 
   const envTelegram = env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
   if (envTelegram && !telegramBots.some((bot) => bot.token === envTelegram)) {
@@ -260,6 +351,16 @@ export function loadConfig(
   if (envSlackBot && envSlackApp && !slackApps.some((app) => app.botToken === envSlackBot && app.appToken === envSlackApp)) {
     slackApps.unshift({ id: "env", botToken: envSlackBot, appToken: envSlackApp, enabled: true });
   }
+  const envFeishuAppId = env.FEISHU_APP_ID?.trim() ?? "";
+  const envFeishuAppSecret = env.FEISHU_APP_SECRET?.trim() ?? "";
+  if (envFeishuAppId && envFeishuAppSecret && !feishuApps.some((a) => a.appId === envFeishuAppId)) {
+    feishuApps.unshift({ id: "env", appId: envFeishuAppId, appSecret: envFeishuAppSecret, enabled: true });
+  }
+  const envMmServerUrl = env.MATTERMOST_SERVER_URL?.trim() ?? "";
+  const envMmAccessToken = env.MATTERMOST_ACCESS_TOKEN?.trim() ?? "";
+  if (envMmServerUrl && envMmAccessToken && !mattermostBots.some((b) => b.serverUrl === envMmServerUrl)) {
+    mattermostBots.unshift({ id: "env", serverUrl: envMmServerUrl, accessToken: envMmAccessToken, enabled: true });
+  }
   const healthPort =
     parseInteger(env.OPENCODE_ROUTER_HEALTH_PORT) ??
     // Convenience alias (common on PaaS / local experiments)
@@ -269,6 +370,8 @@ export function loadConfig(
 
   const telegramEnabledDefault = configFile.channels?.telegram?.enabled ?? true;
   const slackEnabledDefault = configFile.channels?.slack?.enabled ?? true;
+  const feishuEnabledDefault = configFile.channels?.feishu?.enabled ?? true;
+  const mattermostEnabledDefault = configFile.channels?.mattermost?.enabled ?? true;
 
   return {
     configPath,
@@ -282,6 +385,14 @@ export function loadConfig(
     slackApps: slackApps.map((app) => ({
       ...app,
       enabled: app.enabled !== false && parseBoolean(env.SLACK_ENABLED, slackEnabledDefault),
+    })),
+    feishuApps: feishuApps.map((app) => ({
+      ...app,
+      enabled: app.enabled !== false && parseBoolean(env.FEISHU_ENABLED, feishuEnabledDefault),
+    })),
+    mattermostBots: mattermostBots.map((bot) => ({
+      ...bot,
+      enabled: bot.enabled !== false && parseBoolean(env.MATTERMOST_ENABLED, mattermostEnabledDefault),
     })),
     dataDir,
     dbPath,

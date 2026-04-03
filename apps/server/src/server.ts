@@ -164,7 +164,12 @@ function resolveOpenCodeRouterProxyPolicy(
     if (normalized === "/opencode-router/bindings") {
       return { auth: "client", requiredScope: "collaborator" };
     }
-    if (normalized === "/opencode-router/identities/telegram" || normalized === "/opencode-router/identities/slack") {
+    if (
+      normalized === "/opencode-router/identities/telegram" ||
+      normalized === "/opencode-router/identities/slack" ||
+      normalized === "/opencode-router/identities/feishu" ||
+      normalized === "/opencode-router/identities/mattermost"
+    ) {
       return { auth: "client", requiredScope: "collaborator" };
     }
   }
@@ -2263,6 +2268,375 @@ function createRoutes(
     return jsonResponse(response);
   });
 
+  // ---- Feishu identity routes ----
+
+  addRoute(routes, "GET", "/workspace/:id/opencode-router/identities/feishu", "client", async (ctx) => {
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+
+    const apply = await tryFetchOpenCodeRouterHealth("GET", "/identities/feishu", { timeoutMs: 2_000 });
+
+    if (apply.applied && apply.body && typeof apply.body === "object") {
+      const payload = apply.body as Record<string, unknown>;
+      const rawItems = (payload as any).items;
+      if (Array.isArray(rawItems)) {
+        const items = rawItems
+          .filter(
+            (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+          )
+          .map((entry) => {
+            const id = normalizeOpenCodeRouterIdentityId(entry.id);
+            const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+            const running = entry.running === true || entry.running === "true";
+            return { id, enabled, running };
+          })
+          .filter((item) => item.id === workspaceIdentityId);
+        return jsonResponse({ ...payload, items });
+      }
+      return jsonResponse(payload);
+    }
+
+    const current = await readOpenCodeRouterConfigFile(resolveOpenCodeRouterConfigPath());
+    const channels = ensurePlainObject(current.channels);
+    const feishu = ensurePlainObject(channels.feishu);
+    const appsRaw = (feishu as any).apps;
+    const apps = Array.isArray(appsRaw) ? (appsRaw as unknown[]) : [];
+    const items = apps
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)))
+      .map((entry) => {
+        const id = normalizeOpenCodeRouterIdentityId(entry.id);
+        const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+        return { id, enabled, running: false };
+      })
+      .filter((item) => item.id === workspaceIdentityId);
+    return jsonResponse({ ok: true, items });
+  });
+
+  addRoute(routes, "POST", "/workspace/:id/opencode-router/identities/feishu", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const appId = typeof body.appId === "string" ? body.appId.trim() : "";
+    const appSecret = typeof body.appSecret === "string" ? body.appSecret.trim() : "";
+    const enabled = body.enabled === undefined ? true : body.enabled === true || body.enabled === "true";
+    const domain = body.domain === "lark" ? "lark" : "feishu";
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = typeof body.id === "string" ? normalizeOpenCodeRouterIdentityId(body.id) : "";
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+    if (!appId || !appSecret) {
+      throw new ApiError(400, "credentials_required", "Feishu appId and appSecret are required");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.feishu.identity.upsert",
+      summary: `Upsert Feishu identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    await persistOpenCodeRouterFeishuIdentity({ id: identityId, appId, appSecret, enabled, directory: workspace.path, domain });
+
+    const apply = await tryPostOpenCodeRouterHealth(
+      "/identities/feishu",
+      { id: identityId, appId, appSecret, enabled, directory: workspace.path, domain },
+      { timeoutMs: 3_000 },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      applied: apply.applied,
+      feishu: { id: identityId, enabled },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.feishu && typeof record.feishu === "object") {
+        response.feishu = record.feishu;
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.feishu.identity.upsert",
+      target: "opencodeRouter.feishu",
+      summary: `Upserted Feishu identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/opencode-router/identities/feishu/:identityId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = normalizeOpenCodeRouterIdentityId(ctx.params.identityId);
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.feishu.identity.delete",
+      summary: `Delete Feishu identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    const deleted = await deleteOpenCodeRouterFeishuIdentity(identityId);
+    const apply = await tryFetchOpenCodeRouterHealth(
+      "DELETE",
+      `/identities/feishu/${encodeURIComponent(identityId)}`,
+      { timeoutMs: 3_000 },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      deleted,
+      applied: apply.applied,
+      feishu: { id: identityId, deleted },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.feishu && typeof record.feishu === "object") {
+        response.feishu = record.feishu;
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.feishu.identity.delete",
+      target: "opencodeRouter.feishu",
+      summary: `Deleted Feishu identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
+  // ---- Mattermost identity routes ----
+
+  addRoute(routes, "GET", "/workspace/:id/opencode-router/identities/mattermost", "client", async (ctx) => {
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+
+    const apply = await tryFetchOpenCodeRouterHealth("GET", "/identities/mattermost", { timeoutMs: 2_000 });
+
+    if (apply.applied && apply.body && typeof apply.body === "object") {
+      const payload = apply.body as Record<string, unknown>;
+      const rawItems = (payload as any).items;
+      if (Array.isArray(rawItems)) {
+        const items = rawItems
+          .filter(
+            (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+          )
+          .map((entry) => {
+            const id = normalizeOpenCodeRouterIdentityId(entry.id);
+            const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+            const running = entry.running === true || entry.running === "true";
+            return { id, enabled, running };
+          })
+          .filter((item) => item.id === workspaceIdentityId);
+        return jsonResponse({ ...payload, items });
+      }
+      return jsonResponse(payload);
+    }
+
+    const current = await readOpenCodeRouterConfigFile(resolveOpenCodeRouterConfigPath());
+    const channels = ensurePlainObject(current.channels);
+    const mattermost = ensurePlainObject(channels.mattermost);
+    const botsRaw = (mattermost as any).bots;
+    const bots = Array.isArray(botsRaw) ? (botsRaw as unknown[]) : [];
+    const items = bots
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)))
+      .map((entry) => {
+        const id = normalizeOpenCodeRouterIdentityId(entry.id);
+        const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+        return { id, enabled, running: false };
+      })
+      .filter((item) => item.id === workspaceIdentityId);
+    return jsonResponse({ ok: true, items });
+  });
+
+  addRoute(routes, "POST", "/workspace/:id/opencode-router/identities/mattermost", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const serverUrl = typeof body.serverUrl === "string" ? body.serverUrl.trim() : "";
+    const accessToken = typeof body.accessToken === "string" ? body.accessToken.trim() : "";
+    const enabled = body.enabled === undefined ? true : body.enabled === true || body.enabled === "true";
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = typeof body.id === "string" ? normalizeOpenCodeRouterIdentityId(body.id) : "";
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+    if (!serverUrl || !accessToken) {
+      throw new ApiError(400, "credentials_required", "Mattermost serverUrl and accessToken are required");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.mattermost.identity.upsert",
+      summary: `Upsert Mattermost identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    await persistOpenCodeRouterMattermostIdentity({ id: identityId, serverUrl, accessToken, enabled, directory: workspace.path });
+
+    const apply = await tryPostOpenCodeRouterHealth(
+      "/identities/mattermost",
+      { id: identityId, serverUrl, accessToken, enabled, directory: workspace.path },
+      { timeoutMs: 3_000 },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      applied: apply.applied,
+      mattermost: { id: identityId, enabled },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.mattermost && typeof record.mattermost === "object") {
+        response.mattermost = record.mattermost;
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.mattermost.identity.upsert",
+      target: "opencodeRouter.mattermost",
+      summary: `Upserted Mattermost identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/opencode-router/identities/mattermost/:identityId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = normalizeOpenCodeRouterIdentityId(ctx.params.identityId);
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.mattermost.identity.delete",
+      summary: `Delete Mattermost identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    const deleted = await deleteOpenCodeRouterMattermostIdentity(identityId);
+    const apply = await tryFetchOpenCodeRouterHealth(
+      "DELETE",
+      `/identities/mattermost/${encodeURIComponent(identityId)}`,
+      { timeoutMs: 3_000 },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      deleted,
+      applied: apply.applied,
+      mattermost: { id: identityId, deleted },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.mattermost && typeof record.mattermost === "object") {
+        response.mattermost = record.mattermost;
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.mattermost.identity.delete",
+      target: "opencodeRouter.mattermost",
+      summary: `Deleted Mattermost identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
   addRoute(routes, "GET", "/workspace/:id/opencode-router/bindings", "client", async (ctx) => {
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
@@ -3697,6 +4071,8 @@ type OpenCodeRouterConfigFile = Record<string, unknown> & {
   channels?: Record<string, unknown> & {
     telegram?: Record<string, unknown>;
     slack?: Record<string, unknown>;
+    feishu?: Record<string, unknown>;
+    mattermost?: Record<string, unknown>;
   };
 };
 
@@ -4318,6 +4694,190 @@ async function deleteOpenCodeRouterSlackIdentity(idRaw: string): Promise<boolean
     channels: {
       ...channels,
       slack: nextSlack,
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+  return deleted;
+}
+
+async function persistOpenCodeRouterFeishuIdentity(identity: {
+  id: string;
+  appId: string;
+  appSecret: string;
+  enabled: boolean;
+  directory?: string;
+  domain?: string;
+}): Promise<void> {
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const feishu = ensurePlainObject(channels.feishu);
+
+  const id = normalizeOpenCodeRouterIdentityId(identity.id);
+  const appId = identity.appId.trim();
+  const appSecret = identity.appSecret.trim();
+  const directory = typeof identity.directory === "string" ? identity.directory.trim() : "";
+  const domain = identity.domain === "lark" ? "lark" : "feishu";
+  if (!appId || !appSecret) {
+    throw new ApiError(400, "credentials_required", "Feishu appId and appSecret are required");
+  }
+
+  const appsRaw = (feishu as any).apps;
+  const apps = Array.isArray(appsRaw) ? (appsRaw as unknown[]) : [];
+  const nextApps: Array<Record<string, unknown>> = [];
+  let found = false;
+  for (const entry of apps) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId !== id) {
+      nextApps.push(record);
+      continue;
+    }
+    found = true;
+    const prevDir = typeof record.directory === "string" ? record.directory.trim() : "";
+    const nextDir = directory || prevDir;
+    nextApps.push({ id, appId, appSecret, enabled: identity.enabled, domain, ...(nextDir ? { directory: nextDir } : {}) });
+  }
+  if (!found) {
+    nextApps.push({ id, appId, appSecret, enabled: identity.enabled, domain, ...(directory ? { directory } : {}) });
+  }
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      feishu: {
+        ...feishu,
+        enabled: true,
+        apps: nextApps,
+      },
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+}
+
+async function deleteOpenCodeRouterFeishuIdentity(idRaw: string): Promise<boolean> {
+  const id = normalizeOpenCodeRouterIdentityId(idRaw);
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const feishu = ensurePlainObject(channels.feishu);
+
+  const appsRaw = (feishu as any).apps;
+  const apps = Array.isArray(appsRaw) ? (appsRaw as unknown[]) : [];
+  const nextApps: Array<Record<string, unknown>> = [];
+  let deleted = false;
+  for (const entry of apps) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId === id) {
+      deleted = true;
+      continue;
+    }
+    nextApps.push(record);
+  }
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      feishu: {
+        ...feishu,
+        apps: nextApps,
+      },
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+  return deleted;
+}
+
+async function persistOpenCodeRouterMattermostIdentity(identity: {
+  id: string;
+  serverUrl: string;
+  accessToken: string;
+  enabled: boolean;
+  directory?: string;
+}): Promise<void> {
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const mattermost = ensurePlainObject(channels.mattermost);
+
+  const id = normalizeOpenCodeRouterIdentityId(identity.id);
+  const serverUrl = identity.serverUrl.trim();
+  const accessToken = identity.accessToken.trim();
+  const directory = typeof identity.directory === "string" ? identity.directory.trim() : "";
+  if (!serverUrl || !accessToken) {
+    throw new ApiError(400, "credentials_required", "Mattermost serverUrl and accessToken are required");
+  }
+
+  const botsRaw = (mattermost as any).bots;
+  const bots = Array.isArray(botsRaw) ? (botsRaw as unknown[]) : [];
+  const nextBots: Array<Record<string, unknown>> = [];
+  let found = false;
+  for (const entry of bots) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId !== id) {
+      nextBots.push(record);
+      continue;
+    }
+    found = true;
+    const prevDir = typeof record.directory === "string" ? record.directory.trim() : "";
+    const nextDir = directory || prevDir;
+    nextBots.push({ id, serverUrl, accessToken, enabled: identity.enabled, ...(nextDir ? { directory: nextDir } : {}) });
+  }
+  if (!found) {
+    nextBots.push({ id, serverUrl, accessToken, enabled: identity.enabled, ...(directory ? { directory } : {}) });
+  }
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      mattermost: {
+        ...mattermost,
+        enabled: true,
+        bots: nextBots,
+      },
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+}
+
+async function deleteOpenCodeRouterMattermostIdentity(idRaw: string): Promise<boolean> {
+  const id = normalizeOpenCodeRouterIdentityId(idRaw);
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const mattermost = ensurePlainObject(channels.mattermost);
+
+  const botsRaw = (mattermost as any).bots;
+  const bots = Array.isArray(botsRaw) ? (botsRaw as unknown[]) : [];
+  const nextBots: Array<Record<string, unknown>> = [];
+  let deleted = false;
+  for (const entry of bots) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId === id) {
+      deleted = true;
+      continue;
+    }
+    nextBots.push(record);
+  }
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      mattermost: {
+        ...mattermost,
+        bots: nextBots,
+      },
     },
   };
   await writeOpenCodeRouterConfigFile(configPath, next);

@@ -241,7 +241,7 @@ export function OpenCodeRouterSettings(_props: {
         <div class="text-sm font-medium text-gray-12">Messaging</div>
       </div>
       <div class="text-xs text-gray-10">
-        Manage Telegram/Slack identities and bindings in the{" "}
+        Manage messaging identities and bindings in the{" "}
         <span class="font-medium text-gray-12">Identities</span> tab.
       </div>
     </div>

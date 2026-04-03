@@ -238,6 +238,8 @@ export type OpenworkOpenCodeRouterHealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
+    feishu: boolean;
+    mattermost: boolean;
   };
   config: {
     groupsEnabled: boolean;
@@ -305,6 +307,16 @@ export type OpenworkOpenCodeRouterSlackIdentitiesResult = {
   items: OpenworkOpenCodeRouterIdentityItem[];
 };
 
+export type OpenworkOpenCodeRouterFeishuIdentitiesResult = {
+  ok: boolean;
+  items: OpenworkOpenCodeRouterIdentityItem[];
+};
+
+export type OpenworkOpenCodeRouterMattermostIdentitiesResult = {
+  ok: boolean;
+  items: OpenworkOpenCodeRouterIdentityItem[];
+};
+
 export type OpenworkOpenCodeRouterTelegramIdentityUpsertResult = {
   ok: boolean;
   persisted?: boolean;
@@ -360,6 +372,62 @@ export type OpenworkOpenCodeRouterSlackIdentityDeleteResult = {
   applyError?: string;
   applyStatus?: number;
   slack?: {
+    id: string;
+    deleted: boolean;
+  };
+};
+
+export type OpenworkOpenCodeRouterFeishuIdentityUpsertResult = {
+  ok: boolean;
+  persisted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  feishu?: {
+    id: string;
+    enabled: boolean;
+    applied?: boolean;
+    starting?: boolean;
+    error?: string;
+  };
+};
+
+export type OpenworkOpenCodeRouterFeishuIdentityDeleteResult = {
+  ok: boolean;
+  persisted?: boolean;
+  deleted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  feishu?: {
+    id: string;
+    deleted: boolean;
+  };
+};
+
+export type OpenworkOpenCodeRouterMattermostIdentityUpsertResult = {
+  ok: boolean;
+  persisted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  mattermost?: {
+    id: string;
+    enabled: boolean;
+    applied?: boolean;
+    starting?: boolean;
+    error?: string;
+  };
+};
+
+export type OpenworkOpenCodeRouterMattermostIdentityDeleteResult = {
+  ok: boolean;
+  persisted?: boolean;
+  deleted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  mattermost?: {
     id: string;
     deleted: boolean;
   };
@@ -1173,6 +1241,69 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/slack/${encodeURIComponent(identityId)}`,
         { token, hostToken, method: "DELETE" },
       ),
+    getOpenCodeRouterFeishuIdentities: (workspaceId: string) =>
+      requestJson<OpenworkOpenCodeRouterFeishuIdentitiesResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/feishu`,
+        { token, hostToken, timeoutMs: timeouts.opencodeRouter },
+      ),
+    upsertOpenCodeRouterFeishuIdentity: (
+      workspaceId: string,
+      input: { id?: string; appId: string; appSecret: string; enabled?: boolean; domain?: "feishu" | "lark" },
+    ) =>
+      requestJson<OpenworkOpenCodeRouterFeishuIdentityUpsertResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/feishu`,
+        {
+          token,
+          hostToken,
+          method: "POST",
+          body: {
+            ...(input.id?.trim() ? { id: input.id.trim() } : {}),
+            appId: input.appId,
+            appSecret: input.appSecret,
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            ...(input.domain ? { domain: input.domain } : {}),
+          },
+        },
+      ),
+    deleteOpenCodeRouterFeishuIdentity: (workspaceId: string, identityId: string) =>
+      requestJson<OpenworkOpenCodeRouterFeishuIdentityDeleteResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/feishu/${encodeURIComponent(identityId)}`,
+        { token, hostToken, method: "DELETE" },
+      ),
+    getOpenCodeRouterMattermostIdentities: (workspaceId: string) =>
+      requestJson<OpenworkOpenCodeRouterMattermostIdentitiesResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/mattermost`,
+        { token, hostToken, timeoutMs: timeouts.opencodeRouter },
+      ),
+    upsertOpenCodeRouterMattermostIdentity: (
+      workspaceId: string,
+      input: { id?: string; serverUrl: string; accessToken: string; enabled?: boolean },
+    ) =>
+      requestJson<OpenworkOpenCodeRouterMattermostIdentityUpsertResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/mattermost`,
+        {
+          token,
+          hostToken,
+          method: "POST",
+          body: {
+            ...(input.id?.trim() ? { id: input.id.trim() } : {}),
+            serverUrl: input.serverUrl,
+            accessToken: input.accessToken,
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+          },
+        },
+      ),
+    deleteOpenCodeRouterMattermostIdentity: (workspaceId: string, identityId: string) =>
+      requestJson<OpenworkOpenCodeRouterMattermostIdentityDeleteResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/mattermost/${encodeURIComponent(identityId)}`,
+        { token, hostToken, method: "DELETE" },
+      ),
     getOpenCodeRouterBindings: (
       workspaceId: string,
       filters?: { channel?: string; identityId?: string },
@@ -1209,7 +1340,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     sendOpenCodeRouterMessage: (
       workspaceId: string,
       input: {
-        channel: "telegram" | "slack";
+        channel: "telegram" | "slack" | "feishu" | "mattermost";
         text: string;
         identityId?: string;
         directory?: string;

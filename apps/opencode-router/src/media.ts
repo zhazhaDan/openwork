@@ -5,7 +5,7 @@ export type MediaKind = "image" | "audio" | "file";
 export type InboundMediaAttachment = {
   id: string;
   kind: MediaKind;
-  source: "telegram" | "slack";
+  source: string;
   status: "ready" | "failed";
   filePath?: string;
   filename?: string;

@@ -125,6 +125,27 @@ function SlackIcon(props: { size?: number }) {
   );
 }
 
+function FeishuIcon(props: { size?: number }) {
+  const s = () => props.size ?? 20;
+  return (
+    <svg width={s()} height={s()} viewBox="0 0 24 24" fill="none">
+      <rect width="24" height="24" rx="6" fill="#3370FF" />
+      <path d="M6.5 10.5c2-3 5-4.5 8-4.5-1 2-1 4 0 6-2.5 0-5 1-6.5 3.5L6.5 10.5z" fill="white" />
+      <path d="M14.5 6c1.5 0 3 .5 4 2-1.5 1-2.5 3-2.5 5 0 1 .3 2 .8 2.8-.8.7-2 1.2-3.3 1.2-1 0-2-.3-2.8-.8 1.5-2.5 1.5-5 0-7.2.5-1.5 2-3 3.8-3z" fill="white" opacity="0.85" />
+    </svg>
+  );
+}
+
+function MattermostIcon(props: { size?: number }) {
+  const s = () => props.size ?? 20;
+  return (
+    <svg width={s()} height={s()} viewBox="0 0 24 24" fill="none">
+      <rect width="24" height="24" rx="6" fill="#0058CC" />
+      <path d="M12 4C7.6 4 4 7.2 4 11.2c0 2.2 1.1 4.1 2.8 5.4L6 20l3.6-1.6c.8.2 1.6.3 2.4.3 4.4 0 8-3.2 8-7.2S16.4 4 12 4z" fill="white" />
+    </svg>
+  );
+}
+
 /* ---- Status pill sub-component ---- */
 
 function StatusPill(props: { label: string; value: string; ok: boolean }) {
@@ -166,6 +187,25 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
   const [slackStatus, setSlackStatus] = createSignal<string | null>(null);
   const [slackError, setSlackError] = createSignal<string | null>(null);
 
+  const [feishuIdentities, setFeishuIdentities] = createSignal<OpenworkOpenCodeRouterIdentityItem[]>([]);
+  const [feishuIdentitiesError, setFeishuIdentitiesError] = createSignal<string | null>(null);
+  const [feishuAppId, setFeishuAppId] = createSignal("");
+  const [feishuAppSecret, setFeishuAppSecret] = createSignal("");
+  const [feishuDomain, setFeishuDomain] = createSignal<"feishu" | "lark">("feishu");
+  const [feishuEnabled, setFeishuEnabled] = createSignal(true);
+  const [feishuSaving, setFeishuSaving] = createSignal(false);
+  const [feishuStatus, setFeishuStatus] = createSignal<string | null>(null);
+  const [feishuError, setFeishuError] = createSignal<string | null>(null);
+
+  const [mattermostIdentities, setMattermostIdentities] = createSignal<OpenworkOpenCodeRouterIdentityItem[]>([]);
+  const [mattermostIdentitiesError, setMattermostIdentitiesError] = createSignal<string | null>(null);
+  const [mattermostServerUrl, setMattermostServerUrl] = createSignal("");
+  const [mattermostAccessToken, setMattermostAccessToken] = createSignal("");
+  const [mattermostEnabled, setMattermostEnabled] = createSignal(true);
+  const [mattermostSaving, setMattermostSaving] = createSignal(false);
+  const [mattermostStatus, setMattermostStatus] = createSignal<string | null>(null);
+  const [mattermostError, setMattermostError] = createSignal<string | null>(null);
+
   const [expandedChannel, setExpandedChannel] = createSignal<string | null>("telegram");
   const [activeTab, setActiveTab] = createSignal<"general" | "advanced">("general");
 
@@ -178,7 +218,7 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
   const [agentStatus, setAgentStatus] = createSignal<string | null>(null);
   const [agentError, setAgentError] = createSignal<string | null>(null);
 
-  const [sendChannel, setSendChannel] = createSignal<"telegram" | "slack">("telegram");
+  const [sendChannel, setSendChannel] = createSignal<"telegram" | "slack" | "feishu" | "mattermost">("telegram");
   const [sendDirectory, setSendDirectory] = createSignal("");
   const [sendPeerId, setSendPeerId] = createSignal("");
   const [sendAutoBind, setSendAutoBind] = createSignal(true);
@@ -237,11 +277,15 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
     let count = 0;
     if (telegramIdentities().some((i) => i.enabled && i.running)) count++;
     if (slackIdentities().some((i) => i.enabled && i.running)) count++;
+    if (feishuIdentities().some((i) => i.enabled && i.running)) count++;
+    if (mattermostIdentities().some((i) => i.enabled && i.running)) count++;
     return count;
   });
 
   const hasTelegramConnected = createMemo(() => telegramIdentities().some((i) => i.enabled));
   const hasSlackConnected = createMemo(() => slackIdentities().some((i) => i.enabled));
+  const hasFeishuConnected = createMemo(() => feishuIdentities().some((i) => i.enabled));
+  const hasMattermostConnected = createMemo(() => mattermostIdentities().some((i) => i.enabled));
   const telegramBotLink = createMemo(() => {
     const username = telegramBotUsername();
     if (!username) return null;
@@ -473,10 +517,12 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
         return;
       }
 
-      const [healthRes, tgRes, slackRes, telegramInfo] = await Promise.all([
+      const [healthRes, tgRes, slackRes, feishuRes, mattermostRes, telegramInfo] = await Promise.all([
         client.getOpenCodeRouterHealth(id),
         client.getOpenCodeRouterTelegramIdentities(id),
         client.getOpenCodeRouterSlackIdentities(id),
+        client.getOpenCodeRouterFeishuIdentities(id).catch(() => null),
+        client.getOpenCodeRouterMattermostIdentities(id).catch(() => null),
         client.getOpenCodeRouterTelegram(id).catch(() => null),
       ]);
 
@@ -515,6 +561,20 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
         setSlackIdentitiesError("Slack identities unavailable.");
       }
 
+      if (feishuRes && isOpenCodeRouterIdentities(feishuRes)) {
+        setFeishuIdentities(feishuRes.items ?? []);
+      } else {
+        setFeishuIdentities([]);
+        if (feishuRes) setFeishuIdentitiesError("Feishu identities unavailable.");
+      }
+
+      if (mattermostRes && isOpenCodeRouterIdentities(mattermostRes)) {
+        setMattermostIdentities(mattermostRes.items ?? []);
+      } else {
+        setMattermostIdentities([]);
+        if (mattermostRes) setMattermostIdentitiesError("Mattermost identities unavailable.");
+      }
+
       if (!agentDirty() && !agentSaving()) {
         void loadAgentFile();
       }
@@ -524,9 +584,13 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
       setTelegramIdentities([]);
       setTelegramBotUsername(null);
       setSlackIdentities([]);
+      setFeishuIdentities([]);
+      setMattermostIdentities([]);
       setHealthError(message);
       setTelegramIdentitiesError(message);
       setSlackIdentitiesError(message);
+      setFeishuIdentitiesError(message);
+      setMattermostIdentitiesError(message);
       if (messagingEnabled()) {
         setMessagingRestartRequired(true);
       }
@@ -803,6 +867,145 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
     }
   };
 
+  const upsertFeishu = async () => {
+    if (feishuSaving()) return;
+    if (!serverReady()) return;
+    const id = workspaceId();
+    if (!id) return;
+    const client = openworkServerClient();
+    if (!client) return;
+
+    const appId = feishuAppId().trim();
+    const appSecret = feishuAppSecret().trim();
+    if (!appId || !appSecret) return;
+
+    setFeishuSaving(true);
+    setFeishuStatus(null);
+    setFeishuError(null);
+    try {
+      const result = await client.upsertOpenCodeRouterFeishuIdentity(id, {
+        appId,
+        appSecret,
+        enabled: feishuEnabled(),
+        domain: feishuDomain(),
+      });
+      if (result.ok) {
+        setFeishuStatus(result.applied === false ? "Saved (pending apply)." : "Saved.");
+      } else {
+        setFeishuError("Failed to save.");
+      }
+      if (typeof result.applyError === "string" && result.applyError.trim()) {
+        setFeishuError(result.applyError.trim());
+      }
+      setFeishuAppId("");
+      setFeishuAppSecret("");
+      void refreshAll({ force: true });
+    } catch (error) {
+      setFeishuError(formatRequestError(error));
+    } finally {
+      setFeishuSaving(false);
+    }
+  };
+
+  const deleteFeishu = async (identityId: string) => {
+    if (feishuSaving()) return;
+    if (!serverReady()) return;
+    const id = workspaceId();
+    if (!id) return;
+    const client = openworkServerClient();
+    if (!client) return;
+    if (!identityId.trim()) return;
+
+    setFeishuSaving(true);
+    setFeishuStatus(null);
+    setFeishuError(null);
+    try {
+      const result = await client.deleteOpenCodeRouterFeishuIdentity(id, identityId);
+      if (result.ok) {
+        setFeishuStatus(result.applied === false ? "Deleted (pending apply)." : "Deleted.");
+      } else {
+        setFeishuError("Failed to delete.");
+      }
+      if (typeof result.applyError === "string" && result.applyError.trim()) {
+        setFeishuError(result.applyError.trim());
+      }
+      void refreshAll({ force: true });
+    } catch (error) {
+      setFeishuError(formatRequestError(error));
+    } finally {
+      setFeishuSaving(false);
+    }
+  };
+
+  const upsertMattermost = async () => {
+    if (mattermostSaving()) return;
+    if (!serverReady()) return;
+    const id = workspaceId();
+    if (!id) return;
+    const client = openworkServerClient();
+    if (!client) return;
+
+    const serverUrl = mattermostServerUrl().trim();
+    const accessToken = mattermostAccessToken().trim();
+    if (!serverUrl || !accessToken) return;
+
+    setMattermostSaving(true);
+    setMattermostStatus(null);
+    setMattermostError(null);
+    try {
+      const result = await client.upsertOpenCodeRouterMattermostIdentity(id, {
+        serverUrl,
+        accessToken,
+        enabled: mattermostEnabled(),
+      });
+      if (result.ok) {
+        setMattermostStatus(result.applied === false ? "Saved (pending apply)." : "Saved.");
+      } else {
+        setMattermostError("Failed to save.");
+      }
+      if (typeof result.applyError === "string" && result.applyError.trim()) {
+        setMattermostError(result.applyError.trim());
+      }
+      setMattermostServerUrl("");
+      setMattermostAccessToken("");
+      void refreshAll({ force: true });
+    } catch (error) {
+      setMattermostError(formatRequestError(error));
+    } finally {
+      setMattermostSaving(false);
+    }
+  };
+
+  const deleteMattermost = async (identityId: string) => {
+    if (mattermostSaving()) return;
+    if (!serverReady()) return;
+    const id = workspaceId();
+    if (!id) return;
+    const client = openworkServerClient();
+    if (!client) return;
+    if (!identityId.trim()) return;
+
+    setMattermostSaving(true);
+    setMattermostStatus(null);
+    setMattermostError(null);
+    try {
+      const result = await client.deleteOpenCodeRouterMattermostIdentity(id, identityId);
+      if (result.ok) {
+        setMattermostStatus(result.applied === false ? "Deleted (pending apply)." : "Deleted.");
+      } else {
+        setMattermostError("Failed to delete.");
+      }
+      if (typeof result.applyError === "string" && result.applyError.trim()) {
+        setMattermostError(result.applyError.trim());
+      }
+      void refreshAll({ force: true });
+    } catch (error) {
+      setMattermostError(formatRequestError(error));
+    } finally {
+      setMattermostSaving(false);
+    }
+  };
+
   createEffect(() => {
     const baseUrl = scopedOpenworkBaseUrl().trim();
     const id = workspaceId();
@@ -818,6 +1021,10 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
     setTelegramPairingCode(null);
     setSlackIdentities([]);
     setSlackIdentitiesError(null);
+    setFeishuIdentities([]);
+    setFeishuIdentitiesError(null);
+    setMattermostIdentities([]);
+    setMattermostIdentitiesError(null);
     resetAgentState();
     setSendStatus(null);
     setSendError(null);
@@ -1494,6 +1701,389 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
                 </div>
               </Show>
             </div>
+
+            {/* ---- Feishu channel card ---- */}
+            <div
+              class={`rounded-xl border overflow-hidden transition-colors ${
+                hasFeishuConnected()
+                  ? "border-emerald-7/30 bg-emerald-1/20"
+                  : "border-gray-4 bg-gray-1"
+              }`}
+            >
+              {/* Channel header (clickable) */}
+              <button
+                class="w-full flex items-center gap-3.5 px-4 py-3.5 text-left hover:bg-gray-2/50 transition-colors"
+                onClick={() => toggleExpand("feishu")}
+              >
+                <FeishuIcon size={28} />
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[15px] font-semibold text-gray-12">Feishu</span>
+                    <Show when={hasFeishuConnected()}>
+                      <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-1/40 text-emerald-11">
+                        Connected
+                      </span>
+                    </Show>
+                  </div>
+                  <div class="text-[13px] text-gray-9 mt-0.5 leading-snug">
+                    Connect your Feishu (Lark) app to let team members chat with this worker in Feishu groups or DMs.
+                  </div>
+                </div>
+                <ChevronRight
+                  size={16}
+                  class={`text-gray-8 transition-transform flex-shrink-0 ${
+                    expandedChannel() === "feishu" ? "rotate-90" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Expanded section */}
+              <Show when={expandedChannel() === "feishu"}>
+                <div class="border-t border-gray-4 px-4 py-4 space-y-3 animate-[fadeUp_0.2s_ease-out]">
+                  <Show when={feishuIdentitiesError()}>
+                    {(value) => (
+                      <div class="rounded-lg border border-amber-7/20 bg-amber-1/30 px-3 py-2 text-xs text-amber-12">{value()}</div>
+                    )}
+                  </Show>
+
+                  {/* Existing identities */}
+                  <Show when={feishuIdentities().length > 0}>
+                    <div class="space-y-2">
+                      <For each={feishuIdentities()}>
+                        {(item) => (
+                          <div class="flex items-center justify-between gap-3 rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5">
+                            <div class="min-w-0">
+                              <div class="flex items-center gap-2">
+                                <div class={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.running ? "bg-emerald-9" : "bg-gray-8"}`} />
+                                <span class="text-[13px] font-semibold text-gray-12 truncate">
+                                  <span class="font-mono text-[12px]">{item.id}</span>
+                                </span>
+                              </div>
+                              <div class="text-[11px] text-gray-9 mt-0.5 pl-3.5">
+                                {item.enabled ? "Enabled" : "Disabled"} · {item.running ? "Running" : "Stopped"}
+                              </div>
+                            </div>
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                              <Button
+                                variant="outline"
+                                class="h-7 px-2.5 text-[11px]"
+                                disabled={feishuSaving() || item.id === "env" || !workspaceId()}
+                                onClick={() => void deleteFeishu(item.id)}
+                              >
+                                Disconnect
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+
+                    {/* Connected stats summary */}
+                    <div class="flex gap-2.5">
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Status</div>
+                        <div class="flex items-center gap-1.5">
+                          <div class={`w-1.5 h-1.5 rounded-full ${
+                            feishuIdentities().some((i) => i.running) ? "bg-emerald-9" : "bg-gray-8"
+                          }`} />
+                          <span class={`text-[13px] font-semibold ${
+                            feishuIdentities().some((i) => i.running) ? "text-emerald-11" : "text-gray-10"
+                          }`}>
+                            {feishuIdentities().some((i) => i.running) ? "Active" : "Stopped"}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Identities</div>
+                        <div class="text-[13px] font-semibold text-gray-12">{feishuIdentities().length} configured</div>
+                      </div>
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Channel</div>
+                        <div class="text-[13px] font-semibold text-gray-12">
+                          {health()?.channels.feishu ? "On" : "Off"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <Show when={feishuStatus()}>
+                      {(value) => <div class="text-[11px] text-gray-9">{value()}</div>}
+                    </Show>
+                    <Show when={feishuError()}>
+                      {(value) => <div class="text-[11px] text-red-12">{value()}</div>}
+                    </Show>
+                  </Show>
+
+                  {/* Add new identity form */}
+                  <div class="space-y-2.5">
+                    <Show when={feishuIdentities().length === 0}>
+                      <p class="text-[13px] text-gray-10 leading-relaxed">
+                        Create a custom app on the{" "}
+                        <a href="https://open.feishu.cn" target="_blank" class="text-blue-11 underline">Feishu Open Platform</a>,
+                        enable the Bot capability and long-connection (WebSocket) mode, then paste the credentials here.
+                      </p>
+                    </Show>
+
+                    <div class="space-y-2">
+                      <div>
+                        <label class="text-[12px] text-gray-9 block mb-1">App ID</label>
+                        <input
+                          class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5 text-sm text-gray-12 placeholder:text-gray-8"
+                          placeholder="cli_xxxxx"
+                          value={feishuAppId()}
+                          onInput={(e) => setFeishuAppId(e.currentTarget.value)}
+                        />
+                      </div>
+                      <div>
+                        <label class="text-[12px] text-gray-9 block mb-1">App Secret</label>
+                        <input
+                          class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5 text-sm text-gray-12 placeholder:text-gray-8"
+                          placeholder="App Secret"
+                          type="password"
+                          value={feishuAppSecret()}
+                          onInput={(e) => setFeishuAppSecret(e.currentTarget.value)}
+                        />
+                      </div>
+                      <div>
+                        <label class="text-[12px] text-gray-9 block mb-1">Domain</label>
+                        <select
+                          class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2 text-sm text-gray-12"
+                          value={feishuDomain()}
+                          onChange={(e) => setFeishuDomain(e.currentTarget.value as "feishu" | "lark")}
+                        >
+                          <option value="feishu">Feishu (China)</option>
+                          <option value="lark">Lark (International)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <label class="flex items-center gap-2 text-xs text-gray-11">
+                      <input
+                        type="checkbox"
+                        checked={feishuEnabled()}
+                        onChange={(e) => setFeishuEnabled(e.currentTarget.checked)}
+                      />
+                      Enabled
+                    </label>
+
+                    <button
+                      onClick={() => void upsertFeishu()}
+                      disabled={feishuSaving() || !workspaceId() || !feishuAppId().trim() || !feishuAppSecret().trim()}
+                      class={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white border-none transition-opacity ${
+                        feishuSaving() || !workspaceId() || !feishuAppId().trim() || !feishuAppSecret().trim()
+                          ? "opacity-50 cursor-not-allowed"
+                          : "opacity-100 cursor-pointer hover:opacity-90"
+                      }`}
+                      style={{ background: "#3370FF" }}
+                    >
+                      <Show
+                        when={!feishuSaving()}
+                        fallback={
+                          <div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        }
+                      >
+                        <Link size={15} />
+                      </Show>
+                      {feishuSaving() ? "Connecting..." : "Connect Feishu"}
+                    </button>
+
+                    <Show when={feishuIdentities().length === 0}>
+                      <Show when={feishuStatus()}>
+                        {(value) => <div class="text-[11px] text-gray-9">{value()}</div>}
+                      </Show>
+                      <Show when={feishuError()}>
+                        {(value) => <div class="text-[11px] text-red-12">{value()}</div>}
+                      </Show>
+                    </Show>
+                  </div>
+                </div>
+              </Show>
+            </div>
+
+            {/* ---- Mattermost channel card ---- */}
+            <div
+              class={`rounded-xl border overflow-hidden transition-colors ${
+                hasMattermostConnected()
+                  ? "border-emerald-7/30 bg-emerald-1/20"
+                  : "border-gray-4 bg-gray-1"
+              }`}
+            >
+              {/* Channel header (clickable) */}
+              <button
+                class="w-full flex items-center gap-3.5 px-4 py-3.5 text-left hover:bg-gray-2/50 transition-colors"
+                onClick={() => toggleExpand("mattermost")}
+              >
+                <MattermostIcon size={28} />
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[15px] font-semibold text-gray-12">Mattermost</span>
+                    <Show when={hasMattermostConnected()}>
+                      <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-1/40 text-emerald-11">
+                        Connected
+                      </span>
+                    </Show>
+                  </div>
+                  <div class="text-[13px] text-gray-9 mt-0.5 leading-snug">
+                    Connect your Mattermost bot to let team members interact with this worker in channels and DMs.
+                  </div>
+                </div>
+                <ChevronRight
+                  size={16}
+                  class={`text-gray-8 transition-transform flex-shrink-0 ${
+                    expandedChannel() === "mattermost" ? "rotate-90" : ""
+                  }`}
+                />
+              </button>
+
+              {/* Expanded section */}
+              <Show when={expandedChannel() === "mattermost"}>
+                <div class="border-t border-gray-4 px-4 py-4 space-y-3 animate-[fadeUp_0.2s_ease-out]">
+                  <Show when={mattermostIdentitiesError()}>
+                    {(value) => (
+                      <div class="rounded-lg border border-amber-7/20 bg-amber-1/30 px-3 py-2 text-xs text-amber-12">{value()}</div>
+                    )}
+                  </Show>
+
+                  {/* Existing identities */}
+                  <Show when={mattermostIdentities().length > 0}>
+                    <div class="space-y-2">
+                      <For each={mattermostIdentities()}>
+                        {(item) => (
+                          <div class="flex items-center justify-between gap-3 rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5">
+                            <div class="min-w-0">
+                              <div class="flex items-center gap-2">
+                                <div class={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.running ? "bg-emerald-9" : "bg-gray-8"}`} />
+                                <span class="text-[13px] font-semibold text-gray-12 truncate">
+                                  <span class="font-mono text-[12px]">{item.id}</span>
+                                </span>
+                              </div>
+                              <div class="text-[11px] text-gray-9 mt-0.5 pl-3.5">
+                                {item.enabled ? "Enabled" : "Disabled"} · {item.running ? "Running" : "Stopped"}
+                              </div>
+                            </div>
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                              <Button
+                                variant="outline"
+                                class="h-7 px-2.5 text-[11px]"
+                                disabled={mattermostSaving() || item.id === "env" || !workspaceId()}
+                                onClick={() => void deleteMattermost(item.id)}
+                              >
+                                Disconnect
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+
+                    {/* Connected stats summary */}
+                    <div class="flex gap-2.5">
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Status</div>
+                        <div class="flex items-center gap-1.5">
+                          <div class={`w-1.5 h-1.5 rounded-full ${
+                            mattermostIdentities().some((i) => i.running) ? "bg-emerald-9" : "bg-gray-8"
+                          }`} />
+                          <span class={`text-[13px] font-semibold ${
+                            mattermostIdentities().some((i) => i.running) ? "text-emerald-11" : "text-gray-10"
+                          }`}>
+                            {mattermostIdentities().some((i) => i.running) ? "Active" : "Stopped"}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Identities</div>
+                        <div class="text-[13px] font-semibold text-gray-12">{mattermostIdentities().length} configured</div>
+                      </div>
+                      <div class="flex-1 rounded-lg border border-gray-4 bg-gray-2/50 px-3 py-2.5">
+                        <div class="text-[11px] text-gray-9 mb-0.5">Channel</div>
+                        <div class="text-[13px] font-semibold text-gray-12">
+                          {health()?.channels.mattermost ? "On" : "Off"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <Show when={mattermostStatus()}>
+                      {(value) => <div class="text-[11px] text-gray-9">{value()}</div>}
+                    </Show>
+                    <Show when={mattermostError()}>
+                      {(value) => <div class="text-[11px] text-red-12">{value()}</div>}
+                    </Show>
+                  </Show>
+
+                  {/* Add new identity form */}
+                  <div class="space-y-2.5">
+                    <Show when={mattermostIdentities().length === 0}>
+                      <p class="text-[13px] text-gray-10 leading-relaxed">
+                        Create a Bot account in your{" "}
+                        <span class="font-medium text-gray-11">Mattermost Admin Console → Integrations → Bot Accounts</span>,
+                        then paste the server URL and access token here.
+                      </p>
+                    </Show>
+
+                    <div class="space-y-2">
+                      <div>
+                        <label class="text-[12px] text-gray-9 block mb-1">Server URL</label>
+                        <input
+                          class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5 text-sm text-gray-12 placeholder:text-gray-8"
+                          placeholder="https://mattermost.example.com"
+                          value={mattermostServerUrl()}
+                          onInput={(e) => setMattermostServerUrl(e.currentTarget.value)}
+                        />
+                      </div>
+                      <div>
+                        <label class="text-[12px] text-gray-9 block mb-1">Access Token</label>
+                        <input
+                          class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2.5 text-sm text-gray-12 placeholder:text-gray-8"
+                          placeholder="Bot access token"
+                          type="password"
+                          value={mattermostAccessToken()}
+                          onInput={(e) => setMattermostAccessToken(e.currentTarget.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <label class="flex items-center gap-2 text-xs text-gray-11">
+                      <input
+                        type="checkbox"
+                        checked={mattermostEnabled()}
+                        onChange={(e) => setMattermostEnabled(e.currentTarget.checked)}
+                      />
+                      Enabled
+                    </label>
+
+                    <button
+                      onClick={() => void upsertMattermost()}
+                      disabled={mattermostSaving() || !workspaceId() || !mattermostServerUrl().trim() || !mattermostAccessToken().trim()}
+                      class={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white border-none transition-opacity ${
+                        mattermostSaving() || !workspaceId() || !mattermostServerUrl().trim() || !mattermostAccessToken().trim()
+                          ? "opacity-50 cursor-not-allowed"
+                          : "opacity-100 cursor-pointer hover:opacity-90"
+                      }`}
+                      style={{ background: "#0058CC" }}
+                    >
+                      <Show
+                        when={!mattermostSaving()}
+                        fallback={
+                          <div class="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        }
+                      >
+                        <Link size={15} />
+                      </Show>
+                      {mattermostSaving() ? "Connecting..." : "Connect Mattermost"}
+                    </button>
+
+                    <Show when={mattermostIdentities().length === 0}>
+                      <Show when={mattermostStatus()}>
+                        {(value) => <div class="text-[11px] text-gray-9">{value()}</div>}
+                      </Show>
+                      <Show when={mattermostError()}>
+                        {(value) => <div class="text-[11px] text-red-12">{value()}</div>}
+                      </Show>
+                    </Show>
+                  </div>
+                </div>
+              </Show>
+            </div>
           </div>
         </div>
 
@@ -1626,17 +2216,28 @@ export default function IdentitiesView(props: IdentitiesViewProps) {
               <select
                 class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2 text-sm text-gray-12"
                 value={sendChannel()}
-                onChange={(e) => setSendChannel(e.currentTarget.value === "slack" ? "slack" : "telegram")}
+                onChange={(e) => {
+                  const v = e.currentTarget.value;
+                  if (v === "slack" || v === "feishu" || v === "mattermost") setSendChannel(v);
+                  else setSendChannel("telegram");
+                }}
               >
                 <option value="telegram">Telegram</option>
                 <option value="slack">Slack</option>
+                <option value="feishu">Feishu</option>
+                <option value="mattermost">Mattermost</option>
               </select>
             </div>
             <div>
               <label class="text-[12px] text-gray-9 block mb-1">Peer ID (optional)</label>
               <input
                 class="w-full rounded-lg border border-gray-4 bg-gray-1 px-3 py-2 text-sm text-gray-12 placeholder:text-gray-8"
-                placeholder={sendChannel() === "telegram" ? "Telegram chat id (e.g. 123456789)" : "Slack peer id (e.g. D12345678|thread_ts)"}
+                placeholder={
+                  sendChannel() === "telegram" ? "Telegram chat id (e.g. 123456789)" :
+                  sendChannel() === "slack" ? "Slack peer id (e.g. D12345678|thread_ts)" :
+                  sendChannel() === "feishu" ? "Feishu chat id (e.g. oc_xxxxx)" :
+                  "Mattermost channel id"
+                }
                 value={sendPeerId()}
                 onInput={(e) => setSendPeerId(e.currentTarget.value)}
               />

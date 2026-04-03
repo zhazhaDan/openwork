@@ -18,6 +18,7 @@ import { buildPermissionRules, createClient } from "./opencode.js";
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
+import { registerExtAdapters, createExtBridgeHandlers, isExtChannel, isValidChannel } from "./channels-ext.js";
 
 type Adapter = {
   key: string;
@@ -147,6 +148,8 @@ const TOOL_LABELS: Record<string, string> = {
 const CHANNEL_LABELS: Record<ChannelName, string> = {
   telegram: "Telegram",
   slack: "Slack",
+  feishu: "Feishu",
+  mattermost: "Mattermost",
 };
 
 const TYPING_INTERVAL_MS = 6000;
@@ -345,8 +348,19 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const bot = config.telegramBots.find((entry) => entry.id === id);
       return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
     }
-    const app = config.slackApps.find((entry) => entry.id === id);
-    return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    if (channel === "slack") {
+      const app = config.slackApps.find((entry) => entry.id === id);
+      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    }
+    if (channel === "feishu") {
+      const app = config.feishuApps.find((entry) => entry.id === id);
+      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    }
+    if (channel === "mattermost") {
+      const bot = config.mattermostBots.find((entry) => entry.id === id);
+      return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
+    }
+    return "";
   };
 
   const resolveTelegramIdentityAccess = (
@@ -431,6 +445,9 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const base = createSlackAdapter(app, config, logger, handleInbound, undefined, mediaStore);
       adapters.set(key, { ...base, key });
     }
+
+    // Register extended channel adapters (feishu, mattermost).
+    registerExtAdapters(config, adapters, logger, handleInbound, mediaStore);
   }
 
   const keyForSession = (directory: string, sessionID: string) => `${directory}::${sessionID}`;
@@ -749,6 +766,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           // WhatsApp removed; keep field for backward compatibility.
           whatsapp: false,
           slack: Array.from(adapters.keys()).some((key) => key.startsWith("slack:")),
+          feishu: Array.from(adapters.keys()).some((key) => key.startsWith("feishu:")),
+          mattermost: Array.from(adapters.keys()).some((key) => key.startsWith("mattermost:")),
         },
         config: {
           groupsEnabled,
@@ -1226,13 +1245,16 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           return { id, deleted };
         },
 
+        // Extended channel handlers (feishu, mattermost).
+        ...createExtBridgeHandlers(config, adapters, logger, handleInbound, mediaStore, normalizeIdentityId, startAdapterBounded),
+
         listBindings: async (filters?: { channel?: string; identityId?: string }) => {
           const channelRaw = filters?.channel?.trim().toLowerCase();
           const identityIdRaw = filters?.identityId?.trim();
           let channel: ChannelName | undefined;
           if (channelRaw) {
-            if (channelRaw === "telegram" || channelRaw === "slack") {
-              channel = channelRaw as ChannelName;
+            if (isValidChannel(channelRaw)) {
+              channel = channelRaw;
             } else {
               throw new Error("Invalid channel");
             }
@@ -1251,7 +1273,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         setBinding: async (input: { channel: string; identityId?: string; peerId: string; directory: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (!isValidChannel(channel)) {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1276,7 +1298,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         clearBinding: async (input: { channel: string; identityId?: string; peerId: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (!isValidChannel(channel)) {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1298,7 +1320,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           autoBind?: boolean;
         }) => {
           const channelRaw = input.channel.trim().toLowerCase();
-          if (channelRaw !== "telegram" && channelRaw !== "slack") {
+          if (!isValidChannel(channelRaw)) {
             throw new Error("Invalid channel");
           }
           const channel = channelRaw as ChannelName;
@@ -2145,7 +2167,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     // /help command
     if (command === "help") {
-      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private Telegram bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
+      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
       await sendText(channel, identityId, peerId, helpText, { kind: "system" });
       return true;
     }
