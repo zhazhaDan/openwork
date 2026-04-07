@@ -67,6 +67,7 @@ import {
   deriveArtifacts,
   deriveWorkingFiles,
   isTauriRuntime,
+  isDesktopRuntime,
   normalizeDirectoryPath,
 } from "./utils";
 import { currentLocale, setLocale, t } from "../i18n";
@@ -2522,9 +2523,9 @@ export default function App() {
           void workspaceStore.refreshSandboxDoctor?.();
         }}
         workerSubmitting={workspaceStore.sandboxPreflightBusy?.() ?? false}
-        localDisabled={!isTauriRuntime()}
+        localDisabled={!isDesktopRuntime()}
         localDisabledReason={
-          !isTauriRuntime()
+          !isDesktopRuntime()
             ? t("app.local_disabled_reason")
             : null
         }

@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from
 
 import { t, currentLocale } from "../../i18n";
 import type { StartupPreference, WorkspaceDisplay } from "../types";
-import { isTauriRuntime } from "../utils";
+import { isTauriRuntime, isDesktopRuntime } from "../utils";
 import {
   openworkServerInfo,
   openworkServerRestart,
@@ -571,6 +571,31 @@ export function createOpenworkServerStore(options: {
       } catch {
         // restart below
       }
+    }
+
+    // Electron 环境：从 localStorage（protocol handler 注入）获取服务地址和 token
+    if (!isTauriRuntime() && isDesktopRuntime()) {
+      const serverUrl = openworkServerSettings().urlOverride?.trim() ?? "";
+      const serverToken = (() => {
+        try { return localStorage.getItem("openwork.server.token")?.trim() ?? ""; } catch { return ""; }
+      })();
+      const serverHostToken = (() => {
+        try { return localStorage.getItem("openwork.server.hostToken")?.trim() ?? ""; } catch { return ""; }
+      })();
+      if (serverUrl && serverToken) {
+        const client = createOpenworkServerClient({
+          baseUrl: serverUrl,
+          token: serverToken,
+          hostToken: serverHostToken || undefined,
+        });
+        try {
+          await client.health();
+          return client;
+        } catch {
+          return null;
+        }
+      }
+      return null;
     }
 
     if (!isTauriRuntime()) {

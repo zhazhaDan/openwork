@@ -8,7 +8,8 @@ import { isTauriRuntime } from "./utils";
 
 export default function AppEntry() {
   const defaultUrl = (() => {
-    // Desktop app connects to the local OpenCode engine.
+    // Tauri desktop app connects to the local OpenCode engine.
+    // Electron 通过 localStorage urlOverride 获取地址，不走此默认值
     if (isTauriRuntime()) return "http://127.0.0.1:4096";
 
     // When running the web UI against an OpenWork server (e.g. Docker dev stack),

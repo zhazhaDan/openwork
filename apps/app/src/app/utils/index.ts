@@ -72,6 +72,16 @@ export function isTauriRuntime() {
   return typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__ != null;
 }
 
+/**
+ * 检测是否在桌面运行时环境（Tauri 或 Electron）
+ * 用于纯 UI 显示开关（如启用本地工作区、显示引擎状态等）
+ * 不可用于 Tauri IPC 调用（invoke 等），那些必须用 isTauriRuntime()
+ */
+export function isDesktopRuntime() {
+  return typeof window !== "undefined" &&
+    ((window as any).__TAURI_INTERNALS__ != null || (window as any).__ELECTRON__ === true);
+}
+
 export function isWindowsPlatform() {
   if (typeof navigator === "undefined") return false;
 
