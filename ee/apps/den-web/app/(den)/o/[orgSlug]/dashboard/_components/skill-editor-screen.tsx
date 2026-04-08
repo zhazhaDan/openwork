@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Upload } from "lucide-react";
 import { DenButton } from "../../../../_components/ui/button";
 import { DenInput } from "../../../../_components/ui/input";
+import { DenSelect } from "../../../../_components/ui/select";
 import { DenTextarea } from "../../../../_components/ui/textarea";
 import { getErrorMessage, requestJson } from "../../../../_lib/den-flow";
 import {
@@ -15,6 +16,7 @@ import {
 import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 import {
   buildSkillText,
+  getSkillBodyText,
   parseSkillDraft,
   useOrgSkillLibrary,
 } from "./skill-hub-data";
@@ -66,7 +68,10 @@ export function SkillEditorScreen({ skillId }: { skillId?: string }) {
     });
     setName(draft.name || skill.title);
     setDescription(draft.description || skill.description || "");
-    setDetails(draft.details || skill.skillText);
+    setDetails(getSkillBodyText(skill.skillText, {
+      name: skill.title,
+      description: skill.description,
+    }));
     setVisibility(
       skill.shared === "org" ? "org" : skill.shared === "public" ? "public" : "private",
     );
@@ -128,7 +133,7 @@ export function SkillEditorScreen({ skillId }: { skillId?: string }) {
     setUploadedFileName(file.name);
     setName(draft.name || file.name.replace(/\.md$/i, ""));
     setDescription(draft.description);
-    setDetails(draft.details || text);
+    setDetails(getSkillBodyText(text));
     setMode("upload");
   }
 
@@ -238,15 +243,14 @@ export function SkillEditorScreen({ skillId }: { skillId?: string }) {
 
             <label className="grid gap-2">
               <span className="text-[13px] font-medium text-gray-600">Visibility</span>
-              <select
+              <DenSelect
                 value={visibility}
                 onChange={(event) => setVisibility(event.target.value as SkillVisibility)}
-                className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-[14px] text-gray-900 outline-none transition-all focus:border-gray-300 focus:ring-2 focus:ring-gray-900/5"
               >
                 <option value="private">Private</option>
                 <option value="org">Org</option>
                 <option value="public">Public</option>
-              </select>
+              </DenSelect>
             </label>
 
             <label className="grid gap-2">
