@@ -1931,14 +1931,14 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           .join("\n\n");
         const attachmentSummary = summarizeInboundPartsForPrompt(inbound.parts);
         const incomingText = inbound.text || "(no text; user sent media)";
-        const promptText = [
+        const systemText = [
           "You are handling a Slack/Telegram message via OpenWork.",
           `Workspace agent file: ${messagingAgent.filePath}`,
           ...(messagingAgent.selectedAgent ? [`Selected OpenCode agent: ${messagingAgent.selectedAgent}`] : []),
           "Follow these workspace messaging instructions:",
           effectiveInstructions,
-          "",
-          "Incoming user message:",
+        ].join("\n");
+        const userText = [
           incomingText,
           ...(attachmentSummary.length ? ["", "Incoming attachments:", ...attachmentSummary] : []),
         ].join("\n");
@@ -1979,7 +1979,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         const runPrompt = async (): Promise<PromptPart[]> => {
           const response = await getClient(boundDirectory).session.prompt({
             sessionID,
-            parts: [{ type: "text", text: promptText }],
+            system: systemText,
+            parts: [{ type: "text", text: userText }],
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(messagingAgent.selectedAgent ? { agent: messagingAgent.selectedAgent } : {}),
           });
