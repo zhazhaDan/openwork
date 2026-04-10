@@ -71,7 +71,7 @@ export default function CreateWorkspaceSharedPanel(props: {
               <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-dls-border bg-dls-hover text-dls-text">
                 <Cloud size={24} />
               </div>
-              <div class="mt-5 text-[20px] font-semibold tracking-[-0.3px] text-dls-text">Sign in to OpenWork Cloud</div>
+              <div class="mt-5 text-[20px] font-semibold tracking-[-0.3px] text-dls-text">Sign in to 悟东云</div>
               <div class="mt-2 text-[14px] leading-6 text-dls-secondary">Access remote workers shared with your organization.</div>
               <div class="mt-6 flex justify-center">
                 <button type="button" class={pillPrimaryClass} onClick={props.onOpenCloudSignIn}>

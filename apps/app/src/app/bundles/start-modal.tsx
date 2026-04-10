@@ -64,7 +64,7 @@ export default function BundleStartModal(props: {
                 <div class="min-w-0">
                   <h3 class="truncate text-[18px] font-semibold text-dls-text">Start with {props.templateName}</h3>
                   <p class="mt-1 text-sm leading-relaxed text-dls-secondary">
-                    {props.description?.trim() || "Pick a folder and OpenWork will create a workspace from this template."}
+                    {props.description?.trim() || "Pick a folder and 悟东 will create a workspace from this template."}
                   </p>
                 </div>
               </div>
@@ -101,7 +101,7 @@ export default function BundleStartModal(props: {
             <div class="rounded-2xl border border-dls-border bg-dls-sidebar px-5 py-4">
               <div class="text-[15px] font-semibold text-dls-text">Workspace folder</div>
               <p class="mt-1 text-sm text-dls-secondary">
-                Choose where this template should live. OpenWork will create the workspace and bring in the template automatically.
+                Choose where this template should live. 悟东 will create the workspace and bring in the template automatically.
               </p>
               <div class="mt-4 rounded-xl border border-dls-border bg-dls-surface px-4 py-3 text-sm text-dls-text">
                 <Show when={selectedFolder()?.trim()} fallback={<span class="text-dls-secondary">No folder selected yet.</span>}>

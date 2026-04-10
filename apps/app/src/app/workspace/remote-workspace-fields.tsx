@@ -52,7 +52,7 @@ export default function RemoteWorkspaceFields(props: {
             disabled={props.submitting}
             class={inputClass}
           />
-          <span class={inputHintClass}>Paste the OpenWork worker URL you want to connect to.</span>
+          <span class={inputHintClass}>Paste the 悟东 worker URL you want to connect to.</span>
         </label>
 
         <label class="grid gap-2">

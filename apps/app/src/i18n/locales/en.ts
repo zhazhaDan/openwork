@@ -769,6 +769,14 @@ export default {
     "Choose from your configured providers. This selection applies to your next message.",
   "settings.search_models": "Search models…",
   "settings.showing_models": "Showing {count} of {total}",
+  "settings.model_picker_title": "Chat model",
+  "settings.model_picker_default_title": "Default model",
+  "settings.model_picker_desc": "Choose the model for this chat. If a model supports reasoning profiles, configure them on its card.",
+  "settings.model_picker_default_desc": "Choose the default model for new chats, then fine-tune reasoning profiles on its card before pressing Done.",
+  "settings.model_picker_recommended": "Recommended",
+  "settings.model_picker_other_connected": "Other connected models",
+  "settings.model_picker_more_providers": "More providers",
+  "settings.model_picker_no_results": "No models match your search.",
   "settings.model_variant_prompt":
     "Model variant (provider-specific, e.g. high/max/minimal). Leave blank to clear.",
   "settings.model_fallback": "Fallback",
@@ -2810,4 +2818,54 @@ export default {
   "skills.trigger_label": "Trigger: {trigger}",
   "skills.worker_profile_desc":
     "Skills are the core abilities of this worker. Discover them from Hub, manage what is installed, and create new ones directly in chat.",
+
+  // ==================== Authorized Folders Panel ====================
+  "authorized_folders.title": "Authorized folders",
+  "authorized_folders.desc": "Grant this workspace access to read and edit files in directories outside of its root.",
+  "authorized_folders.empty_title": "No external folders authorized",
+  "authorized_folders.empty_desc": "Add a folder to let this workspace read and edit files outside its root directory.",
+  "authorized_folders.workspace_root": "Workspace root",
+  "authorized_folders.always_available": "Always available",
+  "authorized_folders.path_placeholder": "Type a folder path to authorize...",
+
+  // ==================== Blueprint / Starters ====================
+  "blueprint.empty_title": "What do you want to do?",
+  "blueprint.empty_body": "Pick a starting point or just type below.",
+  "blueprint.empty_automation_title": "What do you want to automate?",
+  "blueprint.empty_automation_body": "Start from a reusable workflow or type your own task below.",
+  "blueprint.empty_minimal_title": "Start with a task",
+  "blueprint.empty_minimal_body": "Ask a question about this workspace or use a starter prompt.",
+  "blueprint.starter_csv_title": "Work on a CSV",
+  "blueprint.starter_csv_desc": "Clean up or generate spreadsheet data.",
+  "blueprint.starter_connect_openai_title": "Connect ChatGPT",
+  "blueprint.starter_connect_openai_desc": "Add your OpenAi provider so ChatGPT models are ready in new sessions.",
+  "blueprint.starter_browser_title": "Automate Chrome",
+  "blueprint.starter_browser_desc": "Start a browser automation conversation right away.",
+  "blueprint.starter_automation_command_title": "Create a reusable command",
+  "blueprint.starter_automation_command_desc": "Turn a repeated workflow into a slash command for this workspace.",
+  "blueprint.starter_automation_blueprint_title": "Plan an automation blueprint",
+  "blueprint.starter_automation_blueprint_desc": "Design a repeatable workflow with skills, commands, and handoff steps.",
+  "blueprint.starter_minimal_explore_title": "Explore this workspace",
+  "blueprint.starter_minimal_explore_desc": "Summarize the files and suggest the best first task to tackle.",
+
+  // ---- part-view ----
+  "part.thinking_process": "Thinking process",
+  "part.thinking": "Thinking",
+  "part.show_full_message": "Show full message ({count} chars)",
+
+  // ---- status-bar ----
+  "status.back_to_session": "Back to session",
+
+  // ---- settings messaging shortcut ----
+  "settings.messaging_label": "Messaging",
+  "settings.messaging_identities_hint": "Manage messaging identities and bindings in the Identities tab.",
+
+  // ---- identities: feishu & mattermost ----
+  "identities.feishu_desc":
+    "Connect your Feishu (Lark) app to let team members chat with this worker in Feishu groups or DMs.",
+  "identities.mattermost_desc":
+    "Connect your Mattermost bot to let team members interact with this worker in channels and DMs.",
+  "identities.domain_label": "Domain",
+  "identities.feishu_domain_china": "Feishu (China)",
+  "identities.feishu_domain_international": "Lark (International)",
 } as const;

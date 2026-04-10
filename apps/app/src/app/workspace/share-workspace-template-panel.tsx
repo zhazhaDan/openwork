@@ -153,7 +153,7 @@ export default function ShareWorkspaceTemplatePanel(props: {
       <div class={warningBannerClass}>
         <div class="text-[13px] font-medium text-dls-text">This export includes sensitive workspace config.</div>
         <div class="mt-1 text-[12px] leading-relaxed text-dls-secondary">
-          OpenWork found config that can expose secrets, remote endpoints, or persistence points. Choose how to handle it before publishing.
+          悟东 found config that can expose secrets, remote endpoints, or persistence points. Choose how to handle it before publishing.
         </div>
         <div class="mt-3 space-y-2 text-[12px] leading-relaxed text-dls-secondary">
           <For each={sensitiveWarnings()}>
@@ -237,7 +237,7 @@ export default function ShareWorkspaceTemplatePanel(props: {
           <div class="space-y-4">
             <WorkspaceOptionCard
               title="Share with team"
-              description="Save this workspace template to your active OpenWork Cloud organization."
+              description="Save this workspace template to your active 悟东云 organization."
               icon={Users}
               onClick={() => props.setView("template-team")}
             />
@@ -294,7 +294,7 @@ export default function ShareWorkspaceTemplatePanel(props: {
       <Show when={props.view === "template-team"}>
         <div class="space-y-5 pt-2 animate-in fade-in slide-in-from-right-4 duration-300">
           <div class="text-[14px] leading-relaxed text-dls-secondary">
-            Save this template to your active OpenWork Cloud organization so teammates can open it later from Cloud settings.
+            Save this template to your active 悟东云 organization so teammates can open it later from Cloud settings.
           </div>
 
           <div class={surfaceCardClass}>
@@ -354,7 +354,7 @@ export default function ShareWorkspaceTemplatePanel(props: {
             </button>
 
             <Show when={needsSignIn}>
-              <div class="mt-3 text-[12px] text-dls-secondary">OpenWork Cloud opens in your browser and returns here after sign-in.</div>
+              <div class="mt-3 text-[12px] text-dls-secondary">悟东云 opens in your browser and returns here after sign-in.</div>
             </Show>
 
             <IncludedTemplateItems sections={templateIncludedSections()} />

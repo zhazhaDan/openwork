@@ -1315,8 +1315,8 @@ export default function SessionView(props: SessionViewProps) {
       props.busyLabel === "status.connecting"
         ? "Connecting to OpenCode"
         : props.busyLabel === "status.starting_engine"
-          ? "Starting OpenWork"
-          : "Preparing OpenWork";
+          ? "Starting 悟东"
+          : "Preparing 悟东";
 
     return {
       label,
@@ -2959,10 +2959,10 @@ export default function SessionView(props: SessionViewProps) {
     applyStarterPrompt(starter.prompt);
   };
   return (
-    <div class="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 md:p-4 text-gray-12 font-sans">
-      <div class="flex h-full w-full gap-3 md:gap-4">
+    <div class={`h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] text-gray-12 font-sans ${(window as any).__ELECTRON__ ? 'p-0' : 'p-3 md:p-4'}`}>
+      <div class={`flex h-full w-full ${(window as any).__ELECTRON__ ? 'gap-0' : 'gap-3 md:gap-4'}`}>
         <aside
-          class="relative hidden lg:flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar p-2.5"
+          class={`relative shrink-0 flex-col overflow-hidden border border-dls-border bg-dls-sidebar p-2.5 ${(window as any).__ELECTRON__ ? 'hidden' : 'hidden lg:flex'}`}
           style={{
             width: `${leftSidebarWidth()}px`,
             "min-width": `${leftSidebarWidth()}px`,
@@ -3044,8 +3044,8 @@ export default function SessionView(props: SessionViewProps) {
           />
         </aside>
 
-        <main class="min-w-0 flex-1 flex flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-          <header class="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
+        <main class="min-w-0 flex-1 flex flex-col overflow-hidden border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
+          <header class="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6" style={{ "-webkit-app-region": "drag" }}>
             <div class="flex min-w-0 items-center gap-3">
               <Show when={showUpdatePill()}>
                 <button
@@ -3101,7 +3101,7 @@ export default function SessionView(props: SessionViewProps) {
               </Show>
             </div>
 
-            <div class="flex items-center gap-1.5 text-gray-10">
+            <div class="hidden items-center gap-1.5 text-gray-10">
               <button
                 type="button"
                 class={`hidden items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors sm:flex ${
@@ -3326,31 +3326,25 @@ export default function SessionView(props: SessionViewProps) {
                     }
                   >
                     <div class="text-center px-6 space-y-6">
-                      <div class="w-16 h-16 bg-dls-hover rounded-3xl mx-auto flex items-center justify-center border border-dls-border">
-                        <Zap class="text-dls-secondary" />
-                      </div>
                       <div class="space-y-2">
-                        <h3 class="text-xl font-medium">
+                        <h3 class="font-medium" style={{ "font-size": "36px" }}>
                           {emptyStateTitle()}
                         </h3>
-                        <p class="text-dls-secondary text-sm max-w-sm mx-auto">
-                          {emptyStateBody()}
-                        </p>
                       </div>
                       <Show when={emptyStateStarters().length > 0}>
-                        <div class="grid gap-3 max-w-lg mx-auto text-left">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto text-center">
                           <For each={emptyStateStarters()}>
                             {(starter) => (
                               <button
                                 type="button"
-                                class="rounded-2xl border border-dls-border bg-dls-hover p-4 transition-all hover:bg-dls-active hover:border-gray-7"
+                                class="rounded-2xl border border-dls-border bg-dls-surface px-5 py-6 transition-all hover:bg-dls-hover hover:border-gray-7"
                                 onClick={() => handleEmptyStateStarter(starter)}
                               >
                                 <div class="text-sm font-semibold text-dls-text">
                                   {starter.title}
                                 </div>
                                 <Show when={starter.description}>
-                                  <div class="mt-1 text-xs text-dls-secondary leading-relaxed">
+                                  <div class="mt-1.5 text-xs text-dls-secondary leading-relaxed">
                                     {starter.description}
                                   </div>
                                 </Show>
@@ -3904,33 +3898,33 @@ export default function SessionView(props: SessionViewProps) {
               </div>
 
               <div class="grid grid-cols-2 gap-3">
-                <Button
-                  variant="outline"
-                  class="w-full border-red-7/20 text-red-11 hover:bg-red-1/30"
-                  onClick={() =>
+                <button
+                  type="button"
+                  class="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-[rgba(var(--dls-accent-rgb),0.2)] disabled:opacity-50 disabled:cursor-not-allowed border border-dls-border text-dls-text hover:bg-dls-hover bg-transparent w-full border-red-7/20 text-red-11 hover:bg-red-1/30"
+                  on:click={() =>
                     props.activePermission &&
                     props.respondPermission(props.activePermission.id, "reject")
                   }
                   disabled={props.permissionReplyBusy}
                 >
                   {t("session.deny")}
-                </Button>
+                </button>
                 <div class="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="secondary"
-                    class="text-xs"
-                    onClick={() =>
+                  <button
+                    type="button"
+                    class="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-[rgba(var(--dls-accent-rgb),0.2)] disabled:opacity-50 disabled:cursor-not-allowed bg-gray-12 text-gray-1 hover:bg-gray-11 border border-transparent font-semibold text-xs"
+                    on:click={() =>
                       props.activePermission &&
                       props.respondPermission(props.activePermission.id, "once")
                     }
                     disabled={props.permissionReplyBusy}
                   >
                     {t("session.allow_once")}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    class="text-xs font-bold bg-amber-7 hover:bg-amber-8 text-gray-12 border-none shadow-amber-6/20"
-                    onClick={() =>
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-[rgba(var(--dls-accent-rgb),0.2)] disabled:opacity-50 disabled:cursor-not-allowed text-xs font-bold bg-amber-7 hover:bg-amber-8 text-gray-12 border-none shadow-amber-6/20"
+                    on:click={() =>
                       props.activePermission &&
                       props.respondPermissionAndRemember(
                         props.activePermission.id,
@@ -3940,7 +3934,7 @@ export default function SessionView(props: SessionViewProps) {
                     disabled={props.permissionReplyBusy}
                   >
                     {t("session.allow_for_session")}
-                  </Button>
+                  </button>
                 </div>
               </div>
             </div>

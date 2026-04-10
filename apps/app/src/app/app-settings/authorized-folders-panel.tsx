@@ -133,13 +133,13 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
       (props.openworkServerCapabilities?.config?.write ?? false),
   );
   const authorizedFoldersHint = createMemo(() => {
-    if (!openworkServerReady()) return "OpenWork server is disconnected.";
+    if (!openworkServerReady()) return "悟东服务器 is disconnected.";
     if (!openworkServerWorkspaceReady()) return "No active server workspace is selected.";
     if (!canReadConfig()) {
-      return "OpenWork server config access is unavailable for this workspace.";
+      return "悟东服务器 config access is unavailable for this workspace.";
     }
     if (!canWriteConfig()) {
-      return "OpenWork server is connected read-only for workspace config.";
+      return "悟东服务器 is connected read-only for workspace config.";
     }
     return null;
   });
@@ -206,7 +206,7 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
     const openworkWorkspaceId = props.runtimeWorkspaceId;
     if (!openworkClient || !openworkWorkspaceId || !canWriteConfig()) {
       setAuthorizedFoldersError(
-        "A writable OpenWork server workspace is required to update authorized folders.",
+        "A writable 悟东服务器 workspace is required to update authorized folders.",
       );
       return false;
     }
@@ -321,10 +321,10 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
       <div class="space-y-1">
         <div class="flex items-center gap-2 text-sm font-semibold text-gray-12">
           <FolderLock size={16} class="text-gray-10" />
-          Authorized folders
+          {t("authorized_folders.title")}
         </div>
         <div class="text-xs text-gray-9 leading-relaxed max-w-[65ch]">
-          Grant this workspace access to read and edit files in directories outside of its root.
+          {t("authorized_folders.desc")}
         </div>
       </div>
 
@@ -333,7 +333,7 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
         fallback={
           <div class={`${softPanelClass} px-3 py-3 text-xs text-gray-10`}>
             {authorizedFoldersHint() ??
-              "Connect to a writable OpenWork server workspace to edit authorized folders."}
+              "Connect to a writable 悟东服务器 workspace to edit authorized folders."}
           </div>
         }
       >
@@ -353,9 +353,9 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
                 <div class="flex h-10 w-10 items-center justify-center rounded-full bg-blue-3/30 text-blue-11 mb-3">
                   <Folder size={20} />
                 </div>
-                <div class="text-sm font-medium text-gray-11">No external folders authorized</div>
+                <div class="text-sm font-medium text-gray-11">{t("authorized_folders.empty_title")}</div>
                 <div class="text-[11px] text-gray-9 mt-1 max-w-[40ch]">
-                  Add a folder to let this workspace read and edit files outside its root directory.
+                  {t("authorized_folders.empty_desc")}
                 </div>
               </div>
             }
@@ -380,7 +380,7 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
                             <span class="truncate text-sm font-medium text-gray-12">{folderName}</span>
                             <Show when={isWorkspaceRoot}>
                               <span class="rounded-full border border-blue-7/30 bg-blue-3/25 px-2 py-0.5 text-[10px] font-medium text-blue-11">
-                                Workspace root
+                                {t("authorized_folders.workspace_root")}
                               </span>
                             </Show>
                           </div>
@@ -391,7 +391,7 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
                         when={!isWorkspaceRoot}
                         fallback={
                           <span class="shrink-0 text-[10px] font-medium text-gray-8">
-                            Always available
+                            {t("authorized_folders.always_available")}
                           </span>
                         }
                       >
@@ -446,7 +446,7 @@ export default function AuthorizedFoldersPanel(props: AuthorizedFoldersPanelProp
                 onPaste={(event) => {
                   event.preventDefault();
                 }}
-                placeholder="Type a folder path to authorize..."
+                placeholder={t("authorized_folders.path_placeholder")}
                 disabled={
                   authorizedFoldersLoading() ||
                   authorizedFoldersSaving() ||

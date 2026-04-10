@@ -324,12 +324,12 @@ export default function ModelPickerModal(props: ModelPickerModalProps) {
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h3 class="text-lg font-semibold text-gray-12">
-                  {props.target === "default" ? "Default model" : "Chat model"}
+                  {props.target === "default" ? translate("settings.model_picker_default_title") : translate("settings.model_picker_title")}
                 </h3>
                 <p class="text-sm text-gray-11 mt-1">
                   {props.target === "default"
-                    ? "Choose the default model for new chats, then fine-tune reasoning profiles on its card before pressing Done."
-                    : "Choose the model for this chat. If a model supports reasoning profiles, configure them on its card."}
+                    ? translate("settings.model_picker_default_desc")
+                    : translate("settings.model_picker_desc")}
                 </p>
               </div>
               <Button
@@ -364,7 +364,7 @@ export default function ModelPickerModal(props: ModelPickerModalProps) {
               <Show when={recommendedOptions().length > 0}>
                 <section class="space-y-2">
                   <div class="px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-9">
-                    Recommended
+                    {translate("settings.model_picker_recommended")}
                   </div>
                   <For each={recommendedOptions()}>{({ opt, index }) => renderOption(opt, index)}</For>
                 </section>
@@ -373,7 +373,7 @@ export default function ModelPickerModal(props: ModelPickerModalProps) {
               <Show when={otherEnabledOptions().length > 0}>
                 <section class="space-y-2">
                   <div class="px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-9">
-                    Other connected models
+                    {translate("settings.model_picker_other_connected")}
                   </div>
                   <For each={otherEnabledOptions()}>{({ opt, index }) => renderOption(opt, index)}</For>
                 </section>
@@ -382,7 +382,7 @@ export default function ModelPickerModal(props: ModelPickerModalProps) {
               <Show when={otherOptions().length > 0}>
                 <section class="space-y-2">
                   <div class="px-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-9">
-                    More providers
+                    {translate("settings.model_picker_more_providers")}
                   </div>
                   <For each={otherOptions()}>
                     {(provider) => renderProviderLink(provider, provider.index)}
@@ -392,7 +392,7 @@ export default function ModelPickerModal(props: ModelPickerModalProps) {
 
               <Show when={renderedItems().length === 0}>
                 <div class="rounded-2xl border border-gray-6/70 bg-gray-1/40 px-4 py-6 text-sm text-gray-10">
-                  No models match your search.
+                  {translate("settings.model_picker_no_results")}
                 </div>
               </Show>
             </div>

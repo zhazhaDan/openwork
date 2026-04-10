@@ -2864,14 +2864,11 @@ async function resolveOpencodeRouterEnabled(
     return { enabled: configured, source: "workspace-config" };
   }
 
-  let inferredEnabled = false;
-  const routerConfigPath = resolveOpencodeRouterConfigPath();
-  try {
-    const raw = await readFile(routerConfigPath, "utf8");
-    inferredEnabled = hasConfiguredMessagingServices(asRecord(JSON.parse(raw)));
-  } catch {
-    inferredEnabled = false;
-  }
+  // Default messaging-enabled to true for new workspaces (brand requirement).
+  // Previously this was false and only flipped on when the router config
+  // already had a bot token configured; now messaging is on by default even
+  // for a bare router config.
+  const inferredEnabled = true;
 
   const nextOpenworkConfig: Record<string, unknown> = {
     ...openworkConfig,

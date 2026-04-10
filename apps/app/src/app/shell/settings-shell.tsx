@@ -64,7 +64,6 @@ import {
   MessageCircle,
   Plus,
   SlidersHorizontal,
-  X,
   Zap,
 } from "lucide-solid";
 import type { Language } from "../../i18n";
@@ -1016,10 +1015,10 @@ export default function SettingsShell(props: SettingsShellProps) {
   };
 
   return (
-    <div class="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 md:p-4 text-dls-text font-sans">
-      <div class="flex h-full w-full gap-3 md:gap-4">
+    <div class={`h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] text-dls-text font-sans ${(window as any).__ELECTRON__ ? 'p-0' : 'p-3 md:p-4'}`}>
+      <div class={`flex h-full w-full ${(window as any).__ELECTRON__ ? 'gap-0' : 'gap-3 md:gap-4'}`}>
       <aside
-        class="relative hidden md:flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar p-2.5"
+        class={`relative shrink-0 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar p-2.5 ${(window as any).__ELECTRON__ ? 'hidden' : 'hidden md:flex'}`}
         style={{
           width: `${leftSidebarWidth()}px`,
           "min-width": `${leftSidebarWidth()}px`,
@@ -1088,7 +1087,7 @@ export default function SettingsShell(props: SettingsShellProps) {
 
       <main class="min-w-0 flex-1 flex flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
         <div class="flex-1 overflow-y-auto">
-        <header class="sticky top-0 z-10 flex h-12 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
+        <header class="sticky top-0 z-10 flex h-12 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6" style={{ "-webkit-app-region": "drag" }}>
           <div class="flex min-w-0 items-center gap-3">
             <Show when={showUpdatePill()}>
               <button
@@ -1129,17 +1128,7 @@ export default function SettingsShell(props: SettingsShellProps) {
               <span class="hidden text-[12px] text-dls-secondary lg:inline">{props.busyHint}</span>
             </Show>
           </div>
-          <div class="flex items-center text-gray-10">
-            <button
-              type="button"
-              class="flex h-9 w-9 items-center justify-center rounded-md text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
-              onClick={props.toggleSettings}
-              title={t("dashboard.close_settings")}
-              aria-label={t("dashboard.close_settings")}
-            >
-              <X size={18} />
-            </button>
-          </div>
+          <div class="flex items-center text-gray-10" />
         </header>
 
         <div class="w-full space-y-10 p-6 md:p-10">

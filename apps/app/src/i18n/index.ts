@@ -53,7 +53,7 @@ export const isLanguage = (value: unknown): value is Language => {
 /**
  * Create root-level locale signal with persistence
  */
-const [locale, setLocaleSignal] = createRoot(() => createSignal<Language>("en"));
+const [locale, setLocaleSignal] = createRoot(() => createSignal<Language>("zh"));
 
 /**
  * Get current locale
@@ -124,7 +124,7 @@ export const t = (key: string, localeOverride?: Language, params?: Record<string
  */
 export const initLocale = (): Language => {
   if (typeof window === "undefined") {
-    return "en";
+    return "zh";
   }
 
   try {
@@ -140,9 +140,10 @@ export const initLocale = (): Language => {
     console.warn("Failed to read language preference:", e);
   }
 
+  setLocaleSignal("zh");
   if (typeof document !== "undefined") {
-    document.documentElement.setAttribute("lang", "en");
+    document.documentElement.setAttribute("lang", "zh");
   }
 
-  return "en";
+  return "zh";
 };

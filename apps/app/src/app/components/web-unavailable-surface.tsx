@@ -11,7 +11,7 @@ type WebUnavailableSurfaceProps = {
 };
 
 const MESSAGE =
-  "This feature is currently unavailable in OpenWork Web, check OpenWork Desktop for full functionality.";
+  "This feature is currently unavailable in 悟东 Web, check 悟东 Desktop for full functionality.";
 
 export default function WebUnavailableSurface(props: WebUnavailableSurfaceProps) {
   let contentRef: HTMLDivElement | undefined;
@@ -43,7 +43,7 @@ export default function WebUnavailableSurface(props: WebUnavailableSurfaceProps)
               rel="noreferrer"
               class="inline-flex items-center gap-1 underline underline-offset-2 hover:no-underline"
             >
-              <span>Download OpenWork Desktop</span>
+              <span>Download 悟东 Desktop</span>
               <ArrowUpRight size={props.compact ? 12 : 14} />
             </a>
           </div>

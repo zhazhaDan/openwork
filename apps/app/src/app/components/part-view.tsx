@@ -1,9 +1,10 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { marked } from "marked";
 import type { Part } from "@opencode-ai/sdk/v2/client";
-import { File } from "lucide-solid";
+import { ChevronDown, File } from "lucide-solid";
 import { isTauriRuntime, safeStringify, summarizeStep } from "../utils";
 import { usePlatform } from "../context/platform";
+import { t } from "../../i18n";
 import { perfNow, recordPerfLog } from "../lib/perf-log";
 
 type Props = {
@@ -22,6 +23,18 @@ type LinkType = "url" | "file";
 type TextSegment =
   | { kind: "text"; value: string }
   | { kind: "link"; value: string; href: string; type: LinkType };
+
+/** Extract `<think>…</think>` blocks from model text (e.g. DeepSeek-R1). */
+function splitThinkBlocks(text: string): { thinking: string; rest: string } {
+  const regex = /<think>([\s\S]*?)<\/think>/gi;
+  const parts: string[] = [];
+  const rest = text.replace(regex, (_, content: string) => {
+    const trimmed = content.trim();
+    if (trimmed) parts.push(trimmed);
+    return "";
+  });
+  return { thinking: parts.join("\n\n"), rest: rest.trim() };
+}
 
 type LinkDetectionOptions = {
   allowFilePaths?: boolean;
@@ -518,14 +531,18 @@ export default function PartView(props: Props) {
     if (p().type !== "text") return "";
     return "text" in p() ? String((p() as { text: string }).text ?? "") : "";
   });
+  const parsedThink = createMemo(() => splitThinkBlocks(rawText()));
+  const displayText = createMemo(() => parsedThink().rest);
+  const thinkingContent = createMemo(() => parsedThink().thinking);
+  const [thinkExpanded, setThinkExpanded] = createSignal(false);
   const shouldCollapseLongText = createMemo(
-    () => renderMarkdown() && p().type === "text" && rawText().length >= LARGE_TEXT_COLLAPSE_CHAR_THRESHOLD,
+    () => renderMarkdown() && p().type === "text" && displayText().length >= LARGE_TEXT_COLLAPSE_CHAR_THRESHOLD,
   );
   const collapsedLongText = createMemo(
     () => shouldCollapseLongText() && !(expandedLongText() || isPersistedExpanded()),
   );
   const collapsedPreviewText = createMemo(() => {
-    const text = rawText();
+    const text = displayText();
     if (!collapsedLongText()) return text;
     if (text.length <= LARGE_TEXT_PREVIEW_CHARS) return text;
     return `${text.slice(0, LARGE_TEXT_PREVIEW_CHARS)}\n\n...`;
@@ -578,7 +595,7 @@ export default function PartView(props: Props) {
   const markdownSource = createMemo(() => {
     if (!renderMarkdown() || p().type !== "text") return "";
     if (collapsedLongText()) return "";
-    return rawText();
+    return displayText();
   });
   const throttledMarkdownSource = useThrottledValue(markdownSource, markdownThrottleMs);
   const renderedMarkdown = createMemo(() => {
@@ -665,7 +682,7 @@ export default function PartView(props: Props) {
   };
 
   const renderTextWithLinks = () => {
-    const text = "text" in p() ? String((p() as { text: string }).text) : "";
+    const text = displayText();
     if (!text) return <span>{""}</span>;
 
     const tokens = splitTextTokens(text);
@@ -867,6 +884,28 @@ export default function PartView(props: Props) {
   return (
     <Switch>
       <Match when={p().type === "text"}>
+        <Show when={thinkingContent()}>
+          <div class="text-[14px] text-gray-9 mb-3">
+            <button
+              type="button"
+              class="w-full text-left transition-colors hover:text-dls-text"
+              onClick={() => setThinkExpanded((v) => !v)}
+            >
+              <span class="inline-flex max-w-[720px] items-start gap-1.5 leading-relaxed align-top">
+                <span class="min-w-0 break-words">{t("part.thinking_process")}</span>
+                <ChevronDown
+                  size={14}
+                  class={`mt-[2px] shrink-0 text-gray-8 transition-transform ${thinkExpanded() ? "" : "-rotate-90"}`}
+                />
+              </span>
+            </button>
+            <Show when={thinkExpanded()}>
+              <pre class="mt-3 ml-[22px] whitespace-pre-wrap break-words text-[12px] leading-6 text-gray-10">
+                {thinkingContent()}
+              </pre>
+            </Show>
+          </div>
+        </Show>
         <Show when={collapsedLongText()}>
           <div class="rounded-xl border border-gray-6/70 bg-gray-2/30 p-4 space-y-3">
             <div
@@ -888,7 +927,7 @@ export default function PartView(props: Props) {
                   setExpandedLongText(true);
                 }}
               >
-                Show full message ({rawText().length.toLocaleString()} chars)
+                {t("part.show_full_message", undefined, { count: displayText().length.toLocaleString() })}
               </button>
           </div>
         </Show>
@@ -987,7 +1026,7 @@ export default function PartView(props: Props) {
           }
         >
           <details class={`rounded-lg ${panelBgClass()} p-2`.trim()}>
-            <summary class={`cursor-pointer text-xs ${subtleTextClass()}`.trim()}>Thinking</summary>
+            <summary class={`cursor-pointer text-xs ${subtleTextClass()}`.trim()}>{t("part.thinking")}</summary>
             <pre class={`mt-2 whitespace-pre-wrap break-words text-xs text-gray-12`.trim()}>
               {clampText(String((p() as { text: string }).text), 2000)}
             </pre>

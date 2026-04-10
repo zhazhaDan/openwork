@@ -2650,7 +2650,7 @@ export default function Composer(props: ComposerProps) {
                                                     type="button"
                                                     disabled={!hasDraftContent()}
                                                     onClick={sendDraft}
-                                                    class={`inline-flex h-9 max-h-9 items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-colors ${
+                                                    class={`inline-flex h-9 w-9 max-h-9 items-center justify-center rounded-full transition-colors ${
                                                         !hasDraftContent()
                                                             ? "bg-gray-4 text-gray-10"
                                                             : "bg-dls-accent text-white hover:bg-[var(--dls-accent-hover)]"
@@ -2659,28 +2659,22 @@ export default function Composer(props: ComposerProps) {
                                                         "composer.run_task",
                                                     )}
                                                 >
-                                                    <ArrowUp size={15} />
-                                                    <span>
-                                                        {t(
-                                                            "composer.run_task",
-                                                        )}
-                                                    </span>
+                                                    <ArrowUp size={18} />
                                                 </button>
                                             }
                                         >
                                             <button
                                                 type="button"
                                                 onClick={() => props.onStop()}
-                                                class="inline-flex h-9 max-h-9 items-center gap-2 rounded-full bg-gray-12 px-4 text-[13px] font-medium text-gray-1 transition-colors hover:bg-gray-11"
+                                                class="inline-flex h-9 w-9 max-h-9 items-center justify-center rounded-full bg-gray-12 text-gray-1 transition-colors hover:bg-gray-11"
                                                 title={t(
                                                     "composer.stop",
                                                 )}
                                             >
                                                 <Square
-                                                    size={12}
+                                                    size={14}
                                                     fill="currentColor"
                                                 />
-                                                <span>{t("composer.stop")}</span>
                                             </button>
                                         </Show>
                                     </div>

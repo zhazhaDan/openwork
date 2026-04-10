@@ -90,7 +90,7 @@ export default function CreateRemoteWorkspaceModal(props: CreateRemoteWorkspaceM
           submitting={submitting()}
           hostInputRef={inputRef}
           title="Remote server details"
-          description="Use the URL your OpenWork server shared with you. Add a token only if the server needs one."
+          description="Use the URL your 悟东 server shared with you. Add a token only if the server needs one."
         />
       </div>
 

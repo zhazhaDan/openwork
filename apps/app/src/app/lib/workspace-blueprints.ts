@@ -7,6 +7,7 @@ import type {
   WorkspaceOpenworkConfig,
 } from "../types";
 import { parseTemplateFrontmatter } from "../utils";
+import { t } from "../../i18n";
 
 import browserSetupTemplate from "../data/commands/browser-setup.md?raw";
 
@@ -14,6 +15,13 @@ const BROWSER_AUTOMATION_QUICKSTART_PROMPT = (() => {
   const parsed = parseTemplateFrontmatter(browserSetupTemplate);
   return (parsed?.body ?? browserSetupTemplate).trim();
 })();
+
+export function getDefaultEmptyStateCopy() {
+  return {
+    title: t("blueprint.empty_title"),
+    body: t("blueprint.empty_body"),
+  };
+}
 
 export const DEFAULT_EMPTY_STATE_COPY = {
   title: "What do you want to do?",
@@ -129,16 +137,16 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "automation-command",
           kind: "prompt",
-          title: "Create a reusable command",
-          description: "Turn a repeated workflow into a slash command for this workspace.",
+          title: t("blueprint.starter_automation_command_title"),
+          description: t("blueprint.starter_automation_command_desc"),
           prompt:
             "Help me create a reusable /command for this workspace. Ask what workflow I want to automate, then draft the command.",
         },
         {
           id: "automation-blueprint",
           kind: "session",
-          title: "Plan an automation blueprint",
-          description: "Design a repeatable workflow with skills, commands, and handoff steps.",
+          title: t("blueprint.starter_automation_blueprint_title"),
+          description: t("blueprint.starter_automation_blueprint_desc"),
           prompt:
             "Help me design a reusable automation blueprint for this workspace. Ask what should be standardized, then propose the workflow.",
         },
@@ -148,8 +156,8 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "minimal-explore",
           kind: "prompt",
-          title: "Explore this workspace",
-          description: "Summarize the files and suggest the best first task to tackle.",
+          title: t("blueprint.starter_minimal_explore_title"),
+          description: t("blueprint.starter_minimal_explore_desc"),
           prompt: "Summarize this workspace, point out the most important files, and suggest the best first task.",
         },
       ];
@@ -158,22 +166,22 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "csv-help",
           kind: "prompt",
-          title: "Work on a CSV",
-          description: "Clean up or generate spreadsheet data.",
+          title: t("blueprint.starter_csv_title"),
+          description: t("blueprint.starter_csv_desc"),
           prompt: "Help me create or edit CSV files on this computer.",
         },
         {
           id: "starter-connect-openai",
           kind: "action",
-          title: "Connect ChatGPT",
-          description: "Add your OpenAi provider so ChatGPT models are ready in new sessions.",
+          title: t("blueprint.starter_connect_openai_title"),
+          description: t("blueprint.starter_connect_openai_desc"),
           action: "connect-openai",
         },
         {
           id: "browser-automation",
           kind: "session",
-          title: "Automate Chrome",
-          description: "Start a browser automation conversation right away.",
+          title: t("blueprint.starter_browser_title"),
+          description: t("blueprint.starter_browser_desc"),
           prompt: "Help me connect to Chrome and automate a repetitive task.",
         },
       ];
@@ -184,16 +192,16 @@ export function defaultBlueprintCopyForPreset(preset: string) {
   switch (preset.trim().toLowerCase()) {
     case "automation":
       return {
-        title: "What do you want to automate?",
-        body: "Start from a reusable workflow or type your own task below.",
+        title: t("blueprint.empty_automation_title"),
+        body: t("blueprint.empty_automation_body"),
       };
     case "minimal":
       return {
-        title: "Start with a task",
-        body: "Ask a question about this workspace or use a starter prompt.",
+        title: t("blueprint.empty_minimal_title"),
+        body: t("blueprint.empty_minimal_body"),
       };
     default:
-      return DEFAULT_EMPTY_STATE_COPY;
+      return getDefaultEmptyStateCopy();
   }
 }
 

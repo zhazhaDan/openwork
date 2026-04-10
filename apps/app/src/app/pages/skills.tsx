@@ -761,7 +761,7 @@ export default function SkillsView(props: SkillsViewProps) {
                           <div class="flex flex-wrap items-center gap-2">
                             <h4 class="text-[14px] font-semibold text-dls-text truncate">{skill.name}</h4>
                             <Show when={isOpenworkInjectedSkill(skill)}>
-                              <span class={tagClass}>OpenWork</span>
+                              <span class={tagClass}>悟东</span>
                             </Show>
                           </div>
                           <Show when={skill.description} fallback={<p class="mt-2 text-[13px] text-dls-secondary">{translate("skills.no_description")}</p>}>

@@ -240,11 +240,10 @@ export function OpenCodeRouterSettings(_props: {
     <div class="bg-gray-2/30 border border-gray-6/50 rounded-2xl p-5 space-y-2">
       <div class="flex items-center gap-2">
         <MessageCircle size={16} class="text-gray-11" />
-        <div class="text-sm font-medium text-gray-12">Messaging</div>
+        <div class="text-sm font-medium text-gray-12">{t("settings.messaging_label")}</div>
       </div>
       <div class="text-xs text-gray-10">
-        Manage messaging identities and bindings in the{" "}
-        <span class="font-medium text-gray-12">Identities</span> tab.
+        {t("settings.messaging_identities_hint")}
       </div>
     </div>
   );
@@ -479,8 +478,8 @@ export default function SettingsView(props: SettingsViewProps) {
       return translate("settings.connect_opencode_hint");
     const connected = providerConnectedCount();
     const available = providerAvailableCount();
-    if (!connected) return `${available} ${translate("settings.suffix_available")}`;
-    return `${connected} ${translate("settings.suffix_connected")} · ${available} ${translate("settings.suffix_available")}`;
+    if (!connected) return ` ${translate("settings.suffix_available")}`;
+    return `${connected} ${translate("settings.suffix_connected")} · ${translate("settings.suffix_available")}`;
   });
 
   const handleOpenProviderAuth = async () => {
@@ -839,11 +838,9 @@ export default function SettingsView(props: SettingsViewProps) {
 
   const workspaceTabs = createMemo<SettingsTab[]>(() => [
     "general",
-    "automations",
     "skills",
     "extensions",
     "messaging",
-    "advanced",
   ]);
 
   const globalTabs = createMemo<SettingsTab[]>(() => {
@@ -1107,7 +1104,7 @@ export default function SettingsView(props: SettingsViewProps) {
         scope: props.startupPreference === "server" ? "local-desktop" : "local-host",
         note:
           props.startupPreference === "server"
-            ? "Local desktop router state. Remote worker router state is inferred through the connected OpenWork server."
+            ? "Local desktop router state. Remote worker router state is inferred through the connected 悟东 server."
             : null,
         status: opencodeRouterStatusLabel(),
         healthPort: props.opencodeRouterInfo?.healthPort ?? null,
@@ -1430,7 +1427,7 @@ export default function SettingsView(props: SettingsViewProps) {
           </div>
         </div>
 
-        <div class={settingsRailClass}>
+        <div class={`${settingsRailClass} hidden`}>
           <div class="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.18em] text-gray-8">
             {translate("settings.group_global")}
           </div>
@@ -1694,7 +1691,7 @@ export default function SettingsView(props: SettingsViewProps) {
               </div>
             </div>
 
-              <div class="relative overflow-hidden rounded-2xl border border-blue-7/30 bg-gradient-to-br from-blue-3/35 via-gray-1/75 to-cyan-3/30 p-5">
+              <div class="hidden relative overflow-hidden rounded-2xl border border-blue-7/30 bg-gradient-to-br from-blue-3/35 via-gray-1/75 to-cyan-3/30 p-5">
               <div class="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-blue-6/20 blur-2xl" />
               <div class="pointer-events-none absolute -bottom-12 left-6 h-24 w-24 rounded-full bg-cyan-6/20 blur-2xl" />
 

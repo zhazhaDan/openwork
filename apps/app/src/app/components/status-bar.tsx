@@ -1,5 +1,5 @@
 import { Show, createMemo } from "solid-js";
-import { MessageCircle, Settings } from "lucide-solid";
+import { ArrowLeft, MessageCircle, Settings } from "lucide-solid";
 
 import { t } from "../../i18n";
 import { useConnections } from "../connections/provider";
@@ -104,7 +104,7 @@ export default function StatusBar(props: StatusBarProps) {
         <div class="flex items-center gap-1.5">
           <button
             type="button"
-            class="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+            class="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
             onClick={props.onSendFeedback}
             title={t("status.send_feedback")}
             aria-label={t("status.send_feedback")}
@@ -115,12 +115,15 @@ export default function StatusBar(props: StatusBarProps) {
           <Show when={props.showSettingsButton !== false}>
             <button
               type="button"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+              class="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
               onClick={props.onOpenSettings}
               title={props.settingsOpen ? t("status.back") : t("status.settings")}
               aria-label={props.settingsOpen ? t("status.back") : t("status.settings")}
             >
-              <Settings class="h-4 w-4" />
+              <Show when={props.settingsOpen} fallback={<Settings class="h-4 w-4" />}>
+                <ArrowLeft class="h-4 w-4" />
+              </Show>
+              <span>{props.settingsOpen ? t("status.back_to_session") : t("status.settings")}</span>
             </button>
           </Show>
         </div>
