@@ -136,9 +136,9 @@ type WorkspaceOpenworkConfig = {
   } | null;
 };
 
-function buildDefaultWorkspaceBlueprint(_preset: string): Record<string, unknown> {
+function buildDefaultWorkspaceBlueprint(preset: string): Record<string, unknown> {
   return {
-    emptyState: {
+    emptyState: preset !== "starter" ? null : {
       title: "What do you want to do?",
       body: "Pick a starting point or just type below.",
       starters: [
@@ -150,11 +150,11 @@ function buildDefaultWorkspaceBlueprint(_preset: string): Record<string, unknown
           prompt: "Help me create or edit CSV files on this computer.",
         },
         {
-          id: "starter-connect-openai",
+          id: "starter-connect-atRouter",
           kind: "action",
-          title: "Connect ChatGPT",
-          description: "Add your OpenAi provider so ChatGPT models are ready in new sessions.",
-          action: "connect-openai",
+          title: "Connect ATRouter",
+          description: "Add your ATRouter provider so ATRouter models are ready in new sessions.",
+          action: "connect-atRouter",
         },
         {
           id: "browser-automation",
@@ -165,7 +165,7 @@ function buildDefaultWorkspaceBlueprint(_preset: string): Record<string, unknown
         },
       ],
     },
-    sessions: [
+    sessions: preset !== "starter" ? [] : [
       {
         id: "welcome-to-openwork",
         title: "Welcome to OpenWork",

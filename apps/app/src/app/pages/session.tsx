@@ -2859,13 +2859,21 @@ export default function SessionView(props: SessionViewProps) {
   };
 
   const openNewSessionProviderCta = () => {
+    // 悟东（Electron）环境：通知宿主跳转到悟东 API Keys 设置页
+    if ((window as any).__ELECTRON__ === true) {
+      console.log("__WUDONG_BRIDGE__:open-api-settings");
+      return;
+    }
     openProviderAuth("openai");
   };
 
   const hasOpenAiProviderConnected = createMemo(() =>
     (props.providerConnectedIds ?? []).some((id) => id.trim().toLowerCase() === "openai")
   );
-  const showNewSessionProviderCta = createMemo(() => !hasOpenAiProviderConnected());
+  // 悟东环境下始终显示卡片（卡片含义已变为引导连接 ATRouter，通过悟东设置面板完成）
+  const showNewSessionProviderCta = createMemo(
+    () => (window as any).__ELECTRON__ === true || !hasOpenAiProviderConnected(),
+  );
   const emptyStatePreset = createMemo(
     () =>
       props.activeWorkspaceConfig?.workspace?.preset?.trim() ||
