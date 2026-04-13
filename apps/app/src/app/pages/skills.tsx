@@ -582,8 +582,10 @@ export default function SkillsView(props: SkillsViewProps) {
     () => !props.busy && (props.canInstallSkillCreator || props.canUseDesktopTools)
   );
 
+  const isElectron = (window as any).__ELECTRON__ === true;
   const showInstalledSection = createMemo(() => activeFilter() === "all" || activeFilter() === "installed");
-  const showCloudSection = createMemo(() => activeFilter() === "all" || activeFilter() === "cloud");
+  // 悟东桌面端不显示云（Cloud）模块——没有 OpenWork Cloud 账号体系
+  const showCloudSection = createMemo(() => isElectron ? false : (activeFilter() === "all" || activeFilter() === "cloud"));
   const showHubSection = createMemo(() => activeFilter() === "all" || activeFilter() === "hub");
 
   const isOpenworkInjectedSkill = (skill: SkillCard) => {
@@ -623,35 +625,38 @@ export default function SkillsView(props: SkillsViewProps) {
             </p>
           </div>
 
-          <div class="flex flex-wrap gap-3 lg:justify-end">
-            <button
-              type="button"
-              onClick={() => runDesktopAction(extensions.importLocalSkill)}
-              disabled={props.busy || !props.canUseDesktopTools}
-              class={pillSecondaryClass}
-            >
-              <Upload size={14} />
-              {translate("skills.import_local_skill")}
-            </button>
-            <button
-              type="button"
-              onClick={() => runDesktopAction(extensions.revealSkillsFolder)}
-              disabled={props.busy || !props.canUseDesktopTools}
-              class={pillSecondaryClass}
-            >
-              <FolderOpen size={14} />
-              {translate("skills.reveal_folder")}
-            </button>
-            <button
-              type="button"
-              onClick={handleNewSkill}
-              disabled={!canCreateInChat()}
-              class={pillPrimaryClass}
-            >
-              <Sparkles size={14} />
-              {translate("skills.create_in_chat")}
-            </button>
-          </div>
+          {/* 悟东 Electron 下隐藏这三个按钮（底层依赖 Tauri 插件或 openwork 写权限时序问题，暂未适配） */}
+          <Show when={!isElectron}>
+            <div class="flex flex-wrap gap-3 lg:justify-end">
+              <button
+                type="button"
+                onClick={() => runDesktopAction(extensions.importLocalSkill)}
+                disabled={props.busy || !props.canUseDesktopTools}
+                class={pillSecondaryClass}
+              >
+                <Upload size={14} />
+                {translate("skills.import_local_skill")}
+              </button>
+              <button
+                type="button"
+                onClick={() => runDesktopAction(extensions.revealSkillsFolder)}
+                disabled={props.busy || !props.canUseDesktopTools}
+                class={pillSecondaryClass}
+              >
+                <FolderOpen size={14} />
+                {translate("skills.reveal_folder")}
+              </button>
+              <button
+                type="button"
+                onClick={handleNewSkill}
+                disabled={!canCreateInChat()}
+                class={pillPrimaryClass}
+              >
+                <Sparkles size={14} />
+                {translate("skills.create_in_chat")}
+              </button>
+            </div>
+          </Show>
         </div>
 
         <div class="flex flex-col gap-3 rounded-[20px] border border-dls-border bg-dls-surface p-4 md:flex-row md:items-center md:justify-between">
@@ -667,7 +672,7 @@ export default function SkillsView(props: SkillsViewProps) {
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
-            <For each={["all", "installed", "cloud", "hub"] as SkillsFilter[]}>
+            <For each={(isElectron ? ["all", "installed", "hub"] : ["all", "installed", "cloud", "hub"]) as SkillsFilter[]}>
               {(filter) => (
                 <button
                   type="button"
@@ -697,20 +702,20 @@ export default function SkillsView(props: SkillsViewProps) {
         </div>
       </div>
 
-      <Show when={props.accessHint}>
+      <Show when={!isElectron && props.accessHint}>
         <div class="rounded-[20px] border border-dls-border bg-dls-hover px-5 py-4 text-[13px] text-dls-secondary">
           {props.accessHint}
         </div>
       </Show>
       <Show
-        when={!props.accessHint && !props.canInstallSkillCreator && !props.canUseDesktopTools}
+        when={!isElectron && !props.accessHint && !props.canInstallSkillCreator && !props.canUseDesktopTools}
       >
         <div class="rounded-[20px] border border-dls-border bg-dls-hover px-5 py-4 text-[13px] text-dls-secondary">
           {translate("skills.host_mode_only")}
         </div>
       </Show>
 
-      <Show when={extensions.skillsStatus()}>
+      <Show when={!isElectron && extensions.skillsStatus()}>
         <div class="rounded-[20px] border border-dls-border bg-dls-hover px-5 py-4 text-[13px] text-dls-secondary whitespace-pre-wrap break-words">
           {extensions.skillsStatus()}
         </div>

@@ -2870,10 +2870,14 @@ export default function SessionView(props: SessionViewProps) {
   const hasOpenAiProviderConnected = createMemo(() =>
     (props.providerConnectedIds ?? []).some((id) => id.trim().toLowerCase() === "openai")
   );
-  // 悟东环境下始终显示卡片（卡片含义已变为引导连接 ATRouter，通过悟东设置面板完成）
-  const showNewSessionProviderCta = createMemo(
-    () => (window as any).__ELECTRON__ === true || !hasOpenAiProviderConnected(),
-  );
+  // 悟东环境下卡片引导连接 ATRouter，标志由悟东主进程在 HTML 注入时设置
+  // 主进程从 secureStorage 读取 atrouter key 状态，webview 重新加载时该标志会刷新
+  const showNewSessionProviderCta = createMemo(() => {
+    if ((window as any).__ELECTRON__ === true) {
+      return (window as any).__WUDONG_ATROUTER_CONFIGURED__ !== true;
+    }
+    return !hasOpenAiProviderConnected();
+  });
   const emptyStatePreset = createMemo(
     () =>
       props.activeWorkspaceConfig?.workspace?.preset?.trim() ||
