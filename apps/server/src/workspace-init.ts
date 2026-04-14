@@ -213,7 +213,7 @@ function mergePlugins(existing: string[], required: string[]): string[] {
 }
 
 async function ensureOpenworkAgent(workspaceRoot: string): Promise<void> {
-  const agentsDir = join(workspaceRoot, ".opencode", "agents");
+  const agentsDir = join(workspaceRoot, ".tron", "agents");
   const agentPath = join(agentsDir, "openwork.md");
   if (await exists(agentPath)) return;
   await ensureDir(agentsDir);
@@ -265,11 +265,11 @@ async function ensureStarterCommands(workspaceRoot: string, preset: string): Pro
 async function ensureOpencodeConfig(workspaceRoot: string, preset: string): Promise<void> {
   const path = opencodeConfigPath(workspaceRoot);
   const { data } = await readJsoncFile<Record<string, unknown>>(path, {
-    $schema: "https://opencode.ai/config.json",
+    $schema: "https://troncode.cn/config.json",
   });
   const next: Record<string, unknown> = data && typeof data === "object" && !Array.isArray(data)
     ? { ...data }
-    : { $schema: "https://opencode.ai/config.json" };
+    : { $schema: "https://troncode.cn/config.json" };
 
   if (typeof next.default_agent !== "string" || !next.default_agent.trim()) {
     next.default_agent = "openwork";
@@ -318,7 +318,7 @@ async function ensureWorkspaceOpenworkConfig(workspaceRoot: string, preset: stri
     blueprint: buildDefaultWorkspaceBlueprint(preset),
     reload: null,
   };
-  await ensureDir(join(workspaceRoot, ".opencode"));
+  await ensureDir(join(workspaceRoot, ".tron"));
   await writeFile(path, JSON.stringify(config, null, 2) + "\n", "utf8");
 }
 

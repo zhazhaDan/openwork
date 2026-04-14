@@ -35,30 +35,6 @@ const sidecarDir = sidecarOverride ? resolve(sidecarOverride) : join(__dirname, 
 const packageJsonPath = resolve(__dirname, "..", "package.json");
 const constantsPath = resolve(__dirname, "..", "..", "..", "constants.json");
 
-const opencodeGithubRepo = (() => {
-  const raw =
-    process.env.OPENCODE_GITHUB_REPO?.trim() ||
-    process.env.OPENWORK_OPENCODE_GITHUB_REPO?.trim() ||
-    "anomalyco/opencode";
-  const normalized = raw
-    .replace(/^https:\/\/github\.com\//i, "")
-    .replace(/\.git$/i, "")
-    .trim();
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) {
-    return "anomalyco/opencode";
-  }
-  return normalized;
-})();
-const opencodeVersion = (() => {
-  try {
-    const raw = readFileSync(constantsPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return typeof parsed.opencodeVersion === "string" ? parsed.opencodeVersion.trim() || null : null;
-  } catch {
-    return null;
-  }
-})();
-
 const normalizeVersion = (value) => {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -66,7 +42,7 @@ const normalizeVersion = (value) => {
   return raw.startsWith("v") ? raw.slice(1) : raw;
 };
 
-const opencodeAssetOverride = process.env.OPENCODE_ASSET?.trim() || null;
+// opencode 已被 tron-ai (npm) 替代，不再从 GitHub 下载
 const opencodeRouterVersion = (() => {
   if (process.env.OPENCODE_ROUTER_VERSION?.trim()) return process.env.OPENCODE_ROUTER_VERSION.trim();
   try {
@@ -120,16 +96,6 @@ const bunTarget = (() => {
       return null;
   }
 })();
-
-const opencodeBaseName = process.platform === "win32" ? "opencode.exe" : "opencode";
-const opencodePath = join(sidecarDir, opencodeBaseName);
-const opencodeTargetName = resolvedTargetTriple
-  ? `opencode-${resolvedTargetTriple}${process.platform === "win32" ? ".exe" : ""}`
-  : null;
-const opencodeTargetPath = opencodeTargetName ? join(sidecarDir, opencodeTargetName) : null;
-
-const opencodeCandidatePath = opencodeTargetPath ?? opencodePath;
-let existingOpencodeVersion = null;
 
 // openwork-server paths
 const openworkServerBaseName = "openwork-server";
@@ -246,15 +212,6 @@ const readDirectory = (dir) => {
   });
 };
 
-const findOpencodeBinary = (dir) => {
-  const candidates = readDirectory(dir);
-  return (
-    candidates.find((file) => file.endsWith(`/${opencodeBaseName}`) || file.endsWith(`\\${opencodeBaseName}`)) ??
-    candidates.find((file) => file.endsWith("/opencode") || file.endsWith("\\opencode")) ??
-    null
-  );
-};
-
 const findOpenCodeRouterBinary = (dir) => {
   const candidates = readDirectory(dir);
   return (
@@ -358,135 +315,7 @@ if (existsSync(openworkServerBuildPath)) {
   }
 }
 
-if (!existingOpencodeVersion && opencodeCandidatePath) {
-  existingOpencodeVersion =
-    existsSync(opencodeCandidatePath) && !isStubBinary(opencodeCandidatePath)
-      ? readBinaryVersion(opencodeCandidatePath)
-      : null;
-}
-
-const normalizedOpencodeVersion = normalizeVersion(opencodeVersion);
-
-if (!normalizedOpencodeVersion) {
-  console.error(
-    `OpenCode version could not be resolved from ${constantsPath}.`
-  );
-  process.exit(1);
-}
-
-const opencodeAssetByTarget = {
-  "aarch64-apple-darwin": "opencode-darwin-arm64.zip",
-  "x86_64-apple-darwin": "opencode-darwin-x64-baseline.zip",
-  "x86_64-unknown-linux-gnu": "opencode-linux-x64-baseline.tar.gz",
-  "aarch64-unknown-linux-gnu": "opencode-linux-arm64.tar.gz",
-  "x86_64-pc-windows-msvc": "opencode-windows-x64-baseline.zip",
-  "aarch64-pc-windows-msvc": "opencode-windows-arm64.zip",
-};
-
-const opencodeAsset =
-  opencodeAssetOverride ?? (resolvedTargetTriple ? opencodeAssetByTarget[resolvedTargetTriple] : null);
-
-const opencodeUrl = opencodeAsset
-  ? `https://github.com/${opencodeGithubRepo}/releases/download/v${normalizedOpencodeVersion}/${opencodeAsset}`
-  : null;
-
-const shouldDownloadOpencode =
-  !opencodeCandidatePath ||
-  !existsSync(opencodeCandidatePath) ||
-  isStubBinary(opencodeCandidatePath) ||
-  !existingOpencodeVersion ||
-  existingOpencodeVersion !== normalizedOpencodeVersion;
-
-if (!shouldDownloadOpencode) {
-  console.log(`OpenCode sidecar already present (${existingOpencodeVersion}).`);
-}
-
-if (shouldDownloadOpencode) {
-  if (!opencodeAsset || !opencodeUrl) {
-    console.error(
-      `No OpenCode asset configured for target ${resolvedTargetTriple ?? "unknown"}. Set OPENCODE_ASSET to override.`
-    );
-    process.exit(1);
-  }
-
-  mkdirSync(sidecarDir, { recursive: true });
-
-  const stamp = Date.now();
-  const archivePath = join(tmpdir(), `opencode-${stamp}-${opencodeAsset}`);
-  const extractDir = join(tmpdir(), `opencode-${stamp}`);
-
-  mkdirSync(extractDir, { recursive: true });
-
-  if (process.platform === "win32") {
-    const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
-    const psScript = [
-      "$ErrorActionPreference = 'Stop'",
-      `Invoke-WebRequest -Uri ${psQuote(opencodeUrl)} -OutFile ${psQuote(archivePath)}`,
-      `Expand-Archive -Path ${psQuote(archivePath)} -DestinationPath ${psQuote(extractDir)} -Force`,
-    ].join("; ");
-
-    const result = spawnSync("powershell", ["-NoProfile", "-Command", psScript], {
-      stdio: "inherit",
-    });
-
-    if (result.status !== 0) {
-      process.exit(result.status ?? 1);
-    }
-  } else {
-    const downloadResult = spawnSync("curl", ["-fsSL", "-o", archivePath, opencodeUrl], {
-      stdio: "inherit",
-    });
-    if (downloadResult.status !== 0) {
-      process.exit(downloadResult.status ?? 1);
-    }
-
-    mkdirSync(extractDir, { recursive: true });
-
-    if (opencodeAsset.endsWith(".zip")) {
-      const unzipResult = spawnSync("unzip", ["-q", archivePath, "-d", extractDir], {
-        stdio: "inherit",
-      });
-      if (unzipResult.status !== 0) {
-        process.exit(unzipResult.status ?? 1);
-      }
-    } else if (opencodeAsset.endsWith(".tar.gz")) {
-      const tarResult = spawnSync("tar", ["-xzf", archivePath, "-C", extractDir], {
-        stdio: "inherit",
-      });
-      if (tarResult.status !== 0) {
-        process.exit(tarResult.status ?? 1);
-      }
-    } else {
-      console.error(`Unknown OpenCode archive type: ${opencodeAsset}`);
-      process.exit(1);
-    }
-  }
-
-  const extractedBinary = findOpencodeBinary(extractDir);
-  if (!extractedBinary) {
-    console.error("OpenCode binary not found after extraction.");
-    process.exit(1);
-  }
-
-  const opencodeTargets = [opencodeTargetPath, opencodePath].filter(Boolean);
-  for (const target of opencodeTargets) {
-    try {
-      if (existsSync(target)) {
-        unlinkSync(target);
-      }
-    } catch {
-      // ignore
-    }
-    copyFileSync(extractedBinary, target);
-    try {
-      chmodSync(target, 0o755);
-    } catch {
-      // ignore
-    }
-  }
-
-  console.log(`OpenCode sidecar updated to ${normalizedOpencodeVersion}.`);
-}
+// opencode sidecar 下载已移除 — 由 tron-ai npm 包替代
 
 const opencodeRouterPkgRaw = readFileSync(resolve(opencodeRouterDir, "package.json"), "utf8");
 const opencodeRouterPkg = JSON.parse(opencodeRouterPkgRaw);
@@ -725,10 +554,6 @@ const orchestratorVersion = (() => {
 })();
 
 const versions = {
-  opencode: {
-    version: normalizedOpencodeVersion,
-    sha256: opencodeCandidatePath && existsSync(opencodeCandidatePath) ? sha256File(opencodeCandidatePath) : null,
-  },
   "openwork-server": {
     version: openworkServerVersion,
     sha256: existsSync(openworkServerPath) ? sha256File(openworkServerPath) : null,

@@ -656,15 +656,15 @@ async function resolveHostOpencodeGlobalConfigDir(): Promise<string | null> {
 
   const candidates: string[] = [];
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  if (xdg) candidates.push(join(xdg, "opencode"));
-  candidates.push(join(homedir(), ".config", "opencode"));
+  if (xdg) candidates.push(join(xdg, "tron"));
+  candidates.push(join(homedir(), ".config", "tron"));
   if (process.platform === "darwin") {
     candidates.push(
-      join(homedir(), "Library", "Application Support", "opencode"),
+      join(homedir(), "Library", "Application Support", "tron"),
     );
   }
 
-  const files = ["opencode.jsonc", "opencode.json", "config.json", "AGENTS.md"];
+  const files = ["tron.jsonc", "tron.json", "config.json", "AGENTS.md"];
   for (const candidate of Array.from(
     new Set(candidates.map((item) => resolve(expandTildePath(item)))),
   )) {
@@ -1106,14 +1106,14 @@ async function ensureWorkspace(workspace: string): Promise<string> {
   const resolved = resolve(workspace);
   await mkdir(resolved, { recursive: true });
 
-  const configPathJsonc = join(resolved, "opencode.jsonc");
-  const configPathJson = join(resolved, "opencode.json");
+  const configPathJsonc = join(resolved, "tron.jsonc");
+  const configPathJson = join(resolved, "tron.json");
   const hasJsonc = await fileExists(configPathJsonc);
   const hasJson = await fileExists(configPathJson);
 
   if (!hasJsonc && !hasJson) {
     const payload = JSON.stringify(
-      { $schema: "https://opencode.ai/config.json" },
+      { $schema: "https://troncode.cn/config.json" },
       null,
       2,
     );
@@ -2928,7 +2928,7 @@ function resolveOpencodeStateLayout(options: {
   const xdgDataHome = join(rootDir, "xdg", "data");
   const xdgCacheHome = join(rootDir, "xdg", "cache");
   const xdgStateHome = join(rootDir, "xdg", "state");
-  const configDir = join(rootDir, "config", "opencode");
+  const configDir = join(rootDir, "config", "tron");
 
   return {
     devMode: true,
@@ -2940,13 +2940,13 @@ function resolveOpencodeStateLayout(options: {
       process.env.OPENWORK_DEV_OPENCODE_IMPORT_DATA_DIR?.trim() || undefined,
     env: {
       OPENWORK_DEV_MODE: "1",
-      OPENCODE_TEST_HOME: homeDir,
+      TRON_TEST_HOME: homeDir,
       HOME: homeDir,
       XDG_CONFIG_HOME: xdgConfigHome,
       XDG_DATA_HOME: xdgDataHome,
       XDG_CACHE_HOME: xdgCacheHome,
       XDG_STATE_HOME: xdgStateHome,
-      OPENCODE_CONFIG_DIR: configDir,
+      TRON_CONFIG_DIR: configDir,
     },
   };
 }
@@ -2963,7 +2963,7 @@ async function ensureOpencodeStateLayout(
   const xdgCacheHome = layout.env.XDG_CACHE_HOME;
   const xdgStateHome = layout.env.XDG_STATE_HOME;
   const opencodeDataDir = xdgDataHome
-    ? join(xdgDataHome, "opencode")
+    ? join(xdgDataHome, "tron")
     : undefined;
 
   for (const dir of [
@@ -3720,17 +3720,14 @@ async function startOpencode(options: {
         process.env.OTEL_RESOURCE_ATTRIBUTES,
       ),
       ...(options.username
-        ? { OPENCODE_SERVER_USERNAME: options.username }
+        ? { TRON_SERVER_USERNAME: options.username }
         : {}),
       ...(options.password
-        ? { OPENCODE_SERVER_PASSWORD: options.password }
+        ? { TRON_SERVER_PASSWORD: options.password }
         : {}),
       ...(options.stateLayout?.configDir
-        ? { OPENCODE_CONFIG_DIR: options.stateLayout.configDir }
+        ? { TRON_CONFIG_DIR: options.stateLayout.configDir }
         : {}),
-      OPENCODE_HOT_RELOAD: options.hotReload.enabled ? "1" : "0",
-      OPENCODE_HOT_RELOAD_DEBOUNCE_MS: String(options.hotReload.debounceMs),
-      OPENCODE_HOT_RELOAD_COOLDOWN_MS: String(options.hotReload.cooldownMs),
       ...(options.opencodeRouterHealthPort
         ? {
             OPENCODE_ROUTER_HEALTH_PORT: String(
@@ -3933,6 +3930,8 @@ async function startOpenCodeRouter(options: {
         ...(options.opencodeRouterDataDir
           ? { OPENCODE_ROUTER_DATA_DIR: options.opencodeRouterDataDir }
           : {}),
+        // opencode-router 是 opencode 的 client，它二进制里硬编码读 OPENCODE_SERVER_*
+        // 不能改成 TRON_*，否则 router 拿不到 tron 的鉴权信息
         ...(options.opencodeUsername
           ? { OPENCODE_SERVER_USERNAME: options.opencodeUsername }
           : {}),
@@ -4187,10 +4186,10 @@ async function writeSandboxEntrypoint(options: {
     ': "${OPENWORK_TOKEN:?OPENWORK_TOKEN is required}"',
     ': "${OPENWORK_HOST_TOKEN:?OPENWORK_HOST_TOKEN is required}"',
     options.opencode.username
-      ? ': "${OPENCODE_SERVER_USERNAME:?OPENCODE_SERVER_USERNAME is required}"'
+      ? ': "${TRON_SERVER_USERNAME:?TRON_SERVER_USERNAME is required}"'
       : "",
     options.opencode.password
-      ? ': "${OPENCODE_SERVER_PASSWORD:?OPENCODE_SERVER_PASSWORD is required}"'
+      ? ': "${TRON_SERVER_PASSWORD:?TRON_SERVER_PASSWORD is required}"'
       : "",
     options.openwork.opencodeUsername
       ? ': "${OPENWORK_OPENCODE_USERNAME:?OPENWORK_OPENCODE_USERNAME is required}"'
@@ -4211,7 +4210,7 @@ async function writeSandboxEntrypoint(options: {
   const script = [
     "set -eu",
     `export HOME=${shQuote(sandboxHomeDir)}`,
-    `export OPENCODE_TEST_HOME=${shQuote(sandboxHomeDir)}`,
+    `export TRON_TEST_HOME=${shQuote(sandboxHomeDir)}`,
     'export XDG_CONFIG_HOME="$HOME/.config"',
     'export XDG_CACHE_HOME="$HOME/.cache"',
     'export XDG_DATA_HOME="$HOME/.local/share"',
@@ -4222,7 +4221,7 @@ async function writeSandboxEntrypoint(options: {
     // from cwd, and user workspaces may include preloads that break startup.
     `cd ${shQuote("/persist")}`,
     `export OPENCODE_DIRECTORY=${shQuote(workspaceDir)}`,
-    `export OPENCODE_CONFIG_DIR=${shQuote(opencodeConfigDir)}`,
+    `export TRON_CONFIG_DIR=${shQuote(opencodeConfigDir)}`,
     `mkdir -p ${shQuote(opencodeConfigDir)}`,
     `if [ -d ${shQuote(hostOpencodeConfigDir)} ]; then cp -R ${shQuote(`${hostOpencodeConfigDir}/.`)} ${shQuote(opencodeConfigDir)} 2>/dev/null || true; fi`,
     'mkdir -p "$XDG_DATA_HOME/opencode"',
@@ -4395,8 +4394,8 @@ async function startDockerSandbox(options: {
   addEnvPassThroughArgs(args, [
     "OPENWORK_TOKEN",
     "OPENWORK_HOST_TOKEN",
-    "OPENCODE_SERVER_USERNAME",
-    "OPENCODE_SERVER_PASSWORD",
+    "TRON_SERVER_USERNAME",
+    "TRON_SERVER_PASSWORD",
     "OPENWORK_OPENCODE_USERNAME",
     "OPENWORK_OPENCODE_PASSWORD",
   ]);
@@ -4428,10 +4427,10 @@ async function startDockerSandbox(options: {
       OPENWORK_TOKEN: options.openwork.token,
       OPENWORK_HOST_TOKEN: options.openwork.hostToken,
       ...(options.opencode.username
-        ? { OPENCODE_SERVER_USERNAME: options.opencode.username }
+        ? { TRON_SERVER_USERNAME: options.opencode.username }
         : {}),
       ...(options.opencode.password
-        ? { OPENCODE_SERVER_PASSWORD: options.opencode.password }
+        ? { TRON_SERVER_PASSWORD: options.opencode.password }
         : {}),
       ...(options.openwork.opencodeUsername
         ? { OPENWORK_OPENCODE_USERNAME: options.openwork.opencodeUsername }
@@ -4583,8 +4582,8 @@ async function startAppleContainerSandbox(options: {
   addEnvPassThroughArgs(args, [
     "OPENWORK_TOKEN",
     "OPENWORK_HOST_TOKEN",
-    "OPENCODE_SERVER_USERNAME",
-    "OPENCODE_SERVER_PASSWORD",
+    "TRON_SERVER_USERNAME",
+    "TRON_SERVER_PASSWORD",
     "OPENWORK_OPENCODE_USERNAME",
     "OPENWORK_OPENCODE_PASSWORD",
   ]);
@@ -4614,10 +4613,10 @@ async function startAppleContainerSandbox(options: {
       OPENWORK_TOKEN: options.openwork.token,
       OPENWORK_HOST_TOKEN: options.openwork.hostToken,
       ...(options.opencode.username
-        ? { OPENCODE_SERVER_USERNAME: options.opencode.username }
+        ? { TRON_SERVER_USERNAME: options.opencode.username }
         : {}),
       ...(options.opencode.password
-        ? { OPENCODE_SERVER_PASSWORD: options.opencode.password }
+        ? { TRON_SERVER_PASSWORD: options.opencode.password }
         : {}),
       ...(options.openwork.opencodeUsername
         ? { OPENWORK_OPENCODE_USERNAME: options.openwork.opencodeUsername }
@@ -5438,12 +5437,12 @@ function buildAttachCommand(input: {
 }): string {
   const parts: string[] = [];
   if (input.username && input.password) {
-    parts.push(`OPENCODE_SERVER_USERNAME=${input.username}`);
+    parts.push(`TRON_SERVER_USERNAME=${input.username}`);
   }
   if (input.password) {
-    parts.push(`OPENCODE_SERVER_PASSWORD=${input.password}`);
+    parts.push(`TRON_SERVER_PASSWORD=${input.password}`);
   }
-  parts.push("opencode", "attach", input.url, "--dir", input.workspace);
+  parts.push("tron", "attach", input.url, "--dir", input.workspace);
   return parts.join(" ");
 }
 
@@ -5879,7 +5878,9 @@ async function runRouterDaemon(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  await ensureOpencodeManagedTools(opencodeConfigDir);
+  // ensureOpencodeManagedTools 已禁用：它生成的 ts 工具依赖 @opencode-ai/plugin@<tron-version>，
+  // 而 tron 0.2.1 没有发布对应版本的 plugin 包，导致 session.prompt 在 resolveTools 阶段失败
+  // await ensureOpencodeManagedTools(opencodeConfigDir);
   logger.info(
     "Daemon starting",
     { runId, logFormat, workdir: resolvedWorkdir, host, port },
@@ -6666,12 +6667,8 @@ async function runStatus(args: ParsedArgs) {
     readFlag(args.flags, "openwork-url") ?? process.env.OPENWORK_URL ?? "";
   const opencodeUrl =
     readFlag(args.flags, "opencode-url") ?? process.env.OPENCODE_URL ?? "";
-  const username =
-    readFlag(args.flags, "opencode-username") ??
-    process.env.OPENCODE_SERVER_USERNAME;
-  const password =
-    readFlag(args.flags, "opencode-password") ??
-    process.env.OPENCODE_SERVER_PASSWORD;
+  const username = readFlag(args.flags, "opencode-username");
+  const password = readFlag(args.flags, "opencode-password");
   const outputJson = readBool(args.flags, "json", false);
 
   const status: Record<string, unknown> = {};
@@ -6866,7 +6863,9 @@ async function runStart(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  await ensureOpencodeManagedTools(opencodeConfigDir);
+  // ensureOpencodeManagedTools 已禁用：它生成的 ts 工具依赖 @opencode-ai/plugin@<tron-version>，
+  // 而 tron 0.2.1 没有发布对应版本的 plugin 包，导致 session.prompt 在 resolveTools 阶段失败
+  // await ensureOpencodeManagedTools(opencodeConfigDir);
   const opencodeRouterDataDir =
     sandboxMode === "none"
       ? join(dataDir, "opencode-router", workspaceIdForLocal(resolvedWorkspace))
@@ -7157,8 +7156,8 @@ async function runStart(args: ParsedArgs) {
     ...process.env,
     OPENCODE_DIRECTORY: resolvedWorkspace,
     OPENCODE_URL: opencodeConnectUrl,
-    ...(opencodeUsername ? { OPENCODE_SERVER_USERNAME: opencodeUsername } : {}),
-    ...(opencodePassword ? { OPENCODE_SERVER_PASSWORD: opencodePassword } : {}),
+    ...(opencodeUsername ? { TRON_SERVER_USERNAME: opencodeUsername } : {}),
+    ...(opencodePassword ? { TRON_SERVER_PASSWORD: opencodePassword } : {}),
     ...(opencodeRouterEnabled
       ? { OPENCODE_ROUTER_HEALTH_PORT: String(opencodeRouterHealthPort) }
       : {}),

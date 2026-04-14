@@ -97,7 +97,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "opencode.json" || name === "opencode.jsonc") {
+          if (name === "tron.json" || name === "tron.jsonc") {
             record("config", {
               type: "config",
               name,
@@ -117,7 +117,7 @@ function startWorkspaceReloadWatcher(input: {
           }
 
           // If .opencode is created/removed, rescan the relevant trees.
-          if (name === ".opencode") {
+          if (name === ".tron") {
             for (const tree of trees) tree.scheduleRescan();
           }
         },
@@ -138,7 +138,7 @@ function startWorkspaceReloadWatcher(input: {
     }
   }
 
-  const opencodeRoot = join(root, ".opencode");
+  const opencodeRoot = join(root, ".tron");
 
   trees.push(
     createDirectoryTreeWatcher({
