@@ -3057,7 +3057,7 @@ export default function SessionView(props: SessionViewProps) {
         </aside>
 
         <main class="min-w-0 flex-1 flex flex-col overflow-hidden border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-          <header class="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6" style={{ "-webkit-app-region": "drag" }}>
+          <header class={`z-10 flex shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6 ${(window as any).__ELECTRON__ ? 'h-0 overflow-hidden border-b-0' : 'h-12'}`} style={{ "-webkit-app-region": "drag" }}>
             <div class="flex min-w-0 items-center gap-3">
               <Show when={showUpdatePill()}>
                 <button
