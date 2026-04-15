@@ -18,6 +18,7 @@ import { buildPermissionRules, createClient } from "./opencode.js";
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
+import { createFeishuAdapter, isFeishuPeerId } from "./feishu.js";
 
 type Adapter = {
   key: string;
@@ -147,6 +148,7 @@ const TOOL_LABELS: Record<string, string> = {
 const CHANNEL_LABELS: Record<ChannelName, string> = {
   telegram: "Telegram",
   slack: "Slack",
+  feishu: "Feishu",
 };
 
 const TYPING_INTERVAL_MS = 6000;
@@ -429,6 +431,18 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const key = adapterKey("slack", app.id);
       logger.debug({ identityId: app.id }, "slack adapter enabled");
       const base = createSlackAdapter(app, config, logger, handleInbound, undefined, mediaStore);
+      adapters.set(key, { ...base, key });
+    }
+
+    const enabledFeishu = config.feishuApps.filter((app) => app.enabled !== false);
+    if (enabledFeishu.length === 0) {
+      logger.info("feishu adapters disabled");
+      reportStatus?.("Feishu adapters disabled.");
+    }
+    for (const app of enabledFeishu) {
+      const key = adapterKey("feishu", app.id);
+      logger.debug({ identityId: app.id }, "feishu adapter enabled");
+      const base = createFeishuAdapter(app, config, logger, handleInbound, mediaStore);
       adapters.set(key, { ...base, key });
     }
   }
@@ -1251,7 +1265,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         setBinding: async (input: { channel: string; identityId?: string; peerId: string; directory: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (channel !== "telegram" && channel !== "slack" && channel !== "feishu") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1262,6 +1276,13 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           }
           if (channel === "telegram" && !isTelegramPeerId(peerKey)) {
             throw invalidTelegramPeerIdError();
+          }
+          if (channel === "feishu" && !isFeishuPeerId(peerKey)) {
+            const error = new Error(
+              "Feishu peerId must start with 'ou_' (open_id) or 'oc_' (chat_id).",
+            ) as Error & { status?: number };
+            error.status = 400;
+            throw error;
           }
           const scoped = resolveScopedDirectory(directory);
           if (!scoped.ok) {
@@ -1276,7 +1297,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         clearBinding: async (input: { channel: string; identityId?: string; peerId: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (channel !== "telegram" && channel !== "slack" && channel !== "feishu") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1298,7 +1319,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           autoBind?: boolean;
         }) => {
           const channelRaw = input.channel.trim().toLowerCase();
-          if (channelRaw !== "telegram" && channelRaw !== "slack") {
+          if (channelRaw !== "telegram" && channelRaw !== "slack" && channelRaw !== "feishu") {
             throw new Error("Invalid channel");
           }
           const channel = channelRaw as ChannelName;
@@ -1312,6 +1333,13 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           }
           if (channel === "telegram" && peerId && !isTelegramPeerId(peerId)) {
             throw invalidTelegramPeerIdError();
+          }
+          if (channel === "feishu" && peerId && !isFeishuPeerId(peerId)) {
+            const error = new Error(
+              "Feishu peerId must start with 'ou_' (open_id) or 'oc_' (chat_id).",
+            ) as Error & { status?: number };
+            error.status = 400;
+            throw error;
           }
 
           const normalizedDir = directoryInput ? (() => {

@@ -44,6 +44,7 @@
     "test:npx": "bun scripts/test-npx.mjs"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.60.0",
     "@opencode-ai/sdk": "^1.1.31",
     "@slack/socket-mode": "^2.0.5",
     "@slack/web-api": "^7.13.0",
