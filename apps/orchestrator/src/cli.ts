@@ -2761,7 +2761,7 @@ function resolveRouterDataDir(flags: Map<string, string | boolean>): string {
 }
 
 function resolveWorkspaceOpenworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "openwork.json");
+  return join(workspaceRoot, ".tron", "openwork.json");
 }
 
 function resolveOpencodeRouterConfigPath(): string {

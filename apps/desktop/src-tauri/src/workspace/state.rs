@@ -63,7 +63,7 @@ pub fn openwork_state_paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf)
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
-    let file_path = data_dir.join("openwork-workspaces.json");
+    let file_path = data_dir.join("wudong-workspaces.json");
     Ok((data_dir, file_path))
 }
 

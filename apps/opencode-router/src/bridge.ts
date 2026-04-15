@@ -153,7 +153,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
 };
 
 const TYPING_INTERVAL_MS = 6000;
-const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".opencode/agents/opencode-router.md";
+const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".tron/agents/opencode-router.md";
 const OPENCODE_ROUTER_AGENT_MAX_CHARS = 16_000;
 const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
   "Respond for non-technical users first.",
@@ -252,7 +252,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
   const clients = new Map<string, ReturnType<typeof createClient>>();
   const defaultDirectory = config.opencodeDirectory;
   const workspaceRoot = resolve(defaultDirectory || process.cwd());
-  const mediaStore = new MediaStore(join(workspaceRoot, ".opencode-router", "media"));
+  const mediaStore = new MediaStore(join(workspaceRoot, ".tron-router", "media"));
   await mediaStore.ensureReady();
   const workspaceAgentFilePath = join(workspaceRoot, OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH);
   const agentPromptCache = new Map<string, { mtimeMs: number; config: MessagingAgentConfig }>();
