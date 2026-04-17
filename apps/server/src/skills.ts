@@ -57,8 +57,10 @@ async function parseSkillEntry(
 ): Promise<SkillItem | null> {
   const content = await readFile(skillPath, "utf8");
   const { data, body } = parseFrontmatter(content);
-  const name = typeof data.name === "string" ? data.name : entryName;
+  // 始终以目录名作为 skill name（确保与文件系统路径一致，避免删除时路径不匹配）
+  const name = entryName;
   const description = typeof data.description === "string" ? data.description : "";
+  const description_zh = typeof data.description_zh === "string" ? data.description_zh : undefined;
   const trigger =
     typeof data.trigger === "string"
       ? data.trigger
@@ -71,10 +73,10 @@ async function parseSkillEntry(
   } catch {
     return null;
   }
-  if (name !== entryName) return null;
   return {
     name,
     description,
+    ...(description_zh ? { description_zh } : {}),
     path: skillPath,
     scope,
     trigger: trigger.trim() || undefined,

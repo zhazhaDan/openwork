@@ -2,11 +2,18 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export function opencodeConfigPath(workspaceRoot: string): string {
-  const jsoncPath = join(workspaceRoot, "tron.jsonc");
-  const jsonPath = join(workspaceRoot, "tron.json");
-  if (existsSync(jsoncPath)) return jsoncPath;
-  if (existsSync(jsonPath)) return jsonPath;
-  return jsoncPath;
+  // 优先查找 .tron/ 目录（统一管理位置）
+  const tronDirJsonc = join(workspaceRoot, ".tron", "tron.jsonc");
+  const tronDirJson = join(workspaceRoot, ".tron", "tron.json");
+  if (existsSync(tronDirJsonc)) return tronDirJsonc;
+  if (existsSync(tronDirJson)) return tronDirJson;
+  // 向后兼容：根目录
+  const rootJsonc = join(workspaceRoot, "tron.jsonc");
+  const rootJson = join(workspaceRoot, "tron.json");
+  if (existsSync(rootJsonc)) return rootJsonc;
+  if (existsSync(rootJson)) return rootJson;
+  // 默认创建到 .tron/
+  return tronDirJsonc;
 }
 
 export function openworkConfigPath(workspaceRoot: string): string {

@@ -3697,6 +3697,26 @@ function createRoutes(
   addRoute(routes, "GET", "/workspace/:id/mcp", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const items = await listMcp(workspace.path);
+
+    // 查询 opencode runtime 的 MCP 状态 (GET /mcp)
+    // 返回格式: { [name]: { status: "connected" | "disabled" | "failed" | "needs_auth" | "needs_client_registration", error?: string } }
+    try {
+      const mcpStatus = await fetchOpencodeJson(config, workspace, "/mcp", { method: "GET" });
+      if (mcpStatus && typeof mcpStatus === "object") {
+        for (const item of items) {
+          const info = (mcpStatus as Record<string, any>)[item.name];
+          if (info && typeof info === "object" && typeof info.status === "string") {
+            item.status = info.status;
+            if (typeof info.error === "string") {
+              item.statusError = info.error;
+            }
+          }
+        }
+      }
+    } catch {
+      // opencode runtime 不可用，保持 status 为 undefined
+    }
+
     return jsonResponse({ items });
   });
 
