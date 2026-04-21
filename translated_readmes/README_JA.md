@@ -1,6 +1,6 @@
 [![Discord](https://img.shields.io/badge/discord-加入-5865F2?logo=discord&logoColor=white)](https://discord.gg/VEhNQXxYMB)
 
-[English](./README.md) | [简体中文](./README_ZH.md) | [繁體中文](./README_ZH_hk.md) | 日本語
+[English](../README.md) | 日本語 | [他の翻訳README](./README.md)
 
 # OpenWork
 > OpenWorkは、Claude Cowork/Codex（デスクトップアプリ）のオープンソース代替です。
@@ -13,7 +13,7 @@
 - シェアリング・イズ・ケアリング: localhostでソロ作業を始め、必要に応じてリモート共有を明示的にオプトインできます。
 
 <p align="center">
-  <img src="./app-demo.gif" alt="OpenWork デモ" width="800" />
+  <img src="../app-demo.gif" alt="OpenWork デモ" width="800" />
 </p>
 
 OpenWorkは、エージェントワークフローを再現可能なプロダクト化されたプロセスとして簡単にリリースできるように設計されています。
@@ -22,7 +22,7 @@ OpenWorkは、エージェントワークフローを再現可能なプロダク
 - **OpenWork Orchestrator（CLIホスト）**: デスクトップUIなしでOpenCode + OpenWorkサーバーを実行します。
   - インストール: `npm install -g openwork-orchestrator`
   - 実行: `openwork start --workspace /path/to/workspace --approval auto`
-  - ドキュメント: [apps/orchestrator/README.md](./apps/orchestrator/README.md)
+  - ドキュメント: [apps/orchestrator/README.md](../apps/orchestrator/README.md)
 
 ## クイックスタート
 

@@ -16,23 +16,11 @@ const BROWSER_AUTOMATION_QUICKSTART_PROMPT = (() => {
   return (parsed?.body ?? browserSetupTemplate).trim();
 })();
 
-export function getDefaultEmptyStateCopy() {
-  return {
-    title: t("blueprint.empty_title"),
-    body: t("blueprint.empty_body"),
-  };
-}
 
-export const DEFAULT_EMPTY_STATE_COPY = {
-  title: "What do you want to do?",
-  body: "Pick a starting point or just type below.",
-};
-
-const DEFAULT_WELCOME_BLUEPRINT_MESSAGES: WorkspaceBlueprintSessionMessage[] = [
+const defaultWelcomeBlueprintMessages = (): WorkspaceBlueprintSessionMessage[] => [
   {
     role: "assistant",
-    text:
-      "Hi welcome to OpenWork!\n\nPeople use us to write .csv files on their computer, connect to Chrome and automate repetitive tasks, and sync contacts to Notion.\n\nBut the only limit is your imagination.\n\nWhat would you want to do?",
+    text: t("blueprint.welcome_message"),
   },
 ];
 
@@ -40,21 +28,21 @@ export function defaultBlueprintSessionsForPreset(_preset: string): WorkspaceBlu
   return [
     {
       id: "welcome-to-openwork",
-      title: "Welcome to OpenWork",
-      messages: DEFAULT_WELCOME_BLUEPRINT_MESSAGES,
+      title: t("blueprint.welcome_title"),
+      messages: defaultWelcomeBlueprintMessages(),
       openOnFirstLoad: true,
     },
     {
       id: "csv-playbook",
-      title: "CSV workflow ideas",
+      title: t("blueprint.csv_session_title"),
       messages: [
         {
           role: "assistant",
-          text: "I can help you generate, clean, merge, and summarize CSV files. What kind of CSV work do you want to automate?",
+          text: t("blueprint.csv_session_assistant"),
         },
         {
           role: "user",
-          text: "I want to combine exports from multiple tools into one clean CSV.",
+          text: t("blueprint.csv_session_user"),
         },
       ],
       openOnFirstLoad: false,
@@ -137,18 +125,16 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "automation-command",
           kind: "prompt",
-          title: t("blueprint.starter_automation_command_title"),
-          description: t("blueprint.starter_automation_command_desc"),
-          prompt:
-            "Help me create a reusable /command for this workspace. Ask what workflow I want to automate, then draft the command.",
+          title: t("blueprint.starter_command_title"),
+          description: t("blueprint.starter_command_desc"),
+          prompt: t("blueprint.starter_command_prompt"),
         },
         {
           id: "automation-blueprint",
           kind: "session",
-          title: t("blueprint.starter_automation_blueprint_title"),
-          description: t("blueprint.starter_automation_blueprint_desc"),
-          prompt:
-            "Help me design a reusable automation blueprint for this workspace. Ask what should be standardized, then propose the workflow.",
+          title: t("blueprint.starter_blueprint_title"),
+          description: t("blueprint.starter_blueprint_desc"),
+          prompt: t("blueprint.starter_blueprint_prompt"),
         },
       ];
     case "minimal":
@@ -156,9 +142,9 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "minimal-explore",
           kind: "prompt",
-          title: t("blueprint.starter_minimal_explore_title"),
-          description: t("blueprint.starter_minimal_explore_desc"),
-          prompt: "Summarize this workspace, point out the most important files, and suggest the best first task.",
+          title: t("blueprint.starter_explore_title"),
+          description: t("blueprint.starter_explore_desc"),
+          prompt: t("blueprint.starter_explore_prompt"),
         },
       ];
     default:
@@ -168,7 +154,7 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
           kind: "prompt",
           title: t("blueprint.starter_csv_title"),
           description: t("blueprint.starter_csv_desc"),
-          prompt: "Help me create or edit CSV files on this computer.",
+          prompt: t("blueprint.starter_csv_prompt"),
         },
         {
           id: "starter-connect-openai",
@@ -180,9 +166,9 @@ export function defaultBlueprintStartersForPreset(preset: string): WorkspaceBlue
         {
           id: "browser-automation",
           kind: "session",
-          title: t("blueprint.starter_browser_title"),
-          description: t("blueprint.starter_browser_desc"),
-          prompt: "Help me connect to Chrome and automate a repetitive task.",
+          title: t("blueprint.starter_chrome_title"),
+          description: t("blueprint.starter_chrome_desc"),
+          prompt: t("blueprint.starter_chrome_prompt"),
         },
       ];
   }
@@ -192,16 +178,19 @@ export function defaultBlueprintCopyForPreset(preset: string) {
   switch (preset.trim().toLowerCase()) {
     case "automation":
       return {
-        title: t("blueprint.empty_automation_title"),
-        body: t("blueprint.empty_automation_body"),
+        title: t("blueprint.automation_title"),
+        body: t("blueprint.automation_body"),
       };
     case "minimal":
       return {
-        title: t("blueprint.empty_minimal_title"),
-        body: t("blueprint.empty_minimal_body"),
+        title: t("blueprint.minimal_title"),
+        body: t("blueprint.minimal_body"),
       };
     default:
-      return getDefaultEmptyStateCopy();
+      return {
+        title: t("blueprint.empty_title"),
+        body: t("blueprint.empty_body"),
+      };
   }
 }
 

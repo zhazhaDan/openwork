@@ -4,7 +4,7 @@
 ## Core Philosophy
 
 - Local-first, cloud-ready: OpenWork runs on your machine in one click. Send a message instantly.
-- Composable: desktop app, WhatsApp/Slack/Telegram connector, or server. Use what fits, no lock-in.
+- Composable: desktop app, Slack/Telegram connector, or server. Use what fits, no lock-in.
 - Ejectable: OpenWork is powered by OpenCode, so everything OpenCode can do works in OpenWork, even without a UI yet.
 - Sharing is caring: start solo on localhost, then explicitly opt into remote sharing when you need it.
 
@@ -220,6 +220,12 @@ First contribution checklist:
 - [ ] Add/update tests for behavioral changes.
 - [ ] Include commands run and outcomes in your PR.
 - [ ] Add screenshots/video for user-facing flow changes.
+
+## Supported Languages
+
+Translated READMEs: [`translated_readmes/`](./translated_readmes/README.md), available in English, 简体中文, 繁體中文, 日本語.
+
+The App is available in the following languages: English (`en`), Japanese (`ja`), Simplified Chinese (`zh`), Vietnamese (`vi`), Brazilian Portuguese (`pt-BR`).
 
 ## For Teams & Businesses
 
