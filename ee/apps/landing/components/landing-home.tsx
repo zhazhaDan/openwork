@@ -11,7 +11,6 @@ import {
   landingDemoFlows,
   landingDemoFlowTimes
 } from "./landing-demo-flows";
-import { PricingGrid } from "./pricing-grid";
 import { LandingSharePackageCard } from "./landing-share-package-card";
 import { SiteFooter } from "./site-footer";
 import { SiteNav } from "./site-nav";
@@ -21,7 +20,6 @@ type Props = {
   stars: string;
   downloadHref: string;
   callHref: string;
-  windowsCheckoutUrl: string;
   isMobileVisitor: boolean;
 };
 
@@ -44,6 +42,7 @@ export function LandingHome(props: Props) {
     [activeDemoId]
   );
 
+  const callLinkProps = externalLinkProps(props.callHref);
   const primaryCtaHref = props.isMobileVisitor
     ? "https://app.openworklabs.com"
     : "/download";
@@ -90,10 +89,11 @@ export function LandingHome(props: Props) {
                   {primaryCtaLabel} <Download size={18} />
                 </a>
                 <a
-                  href="/pricing"
+                  href={props.callHref}
                   className="secondary-button"
+                  {...callLinkProps}
                 >
-                  See pricing
+                  Contact sales
                 </a>
               </div>
 
@@ -210,14 +210,6 @@ export function LandingHome(props: Props) {
             </div>
           </section>
 
-          <section className="landing-shell rounded-[2.5rem] p-8 md:p-12">
-            <PricingGrid
-              windowsCheckoutUrl={props.windowsCheckoutUrl}
-              callUrl={props.callHref}
-              showHeader={true}
-            />
-          </section>
-
           <section
             ref={enterpriseShowcaseRef}
             className="landing-shell rounded-[2.5rem] p-8 md:p-12"
@@ -302,7 +294,7 @@ export function LandingHome(props: Props) {
 
               <div
                 className="relative flex min-h-[400px] w-full items-center justify-center overflow-hidden rounded-3xl border border-gray-100 bg-cover bg-center p-6 lg:w-2/3 md:p-10"
-                style={{ backgroundImage: "url('/enterprise-showcase-bg.png')" }}
+                style={{ backgroundImage: "url('/enterprise-showcase-bg.jpg')" }}
               >
                 {showEnterpriseShowcase ? (
                   <div className="grid w-full [&>*]:col-start-1 [&>*]:row-start-1">

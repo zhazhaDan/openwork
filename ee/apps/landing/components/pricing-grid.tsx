@@ -4,7 +4,6 @@ import { ArrowUpRight, Cloud, Download, Shield } from "lucide-react";
 import { ResponsiveGrain } from "./responsive-grain";
 
 type PricingGridProps = {
-  windowsCheckoutUrl: string;
   callUrl: string;
   showHeader?: boolean;
 };
@@ -47,7 +46,7 @@ function PricingCardView({ card }: { card: PricingCard }) {
         <div className="relative z-10 flex flex-col h-full min-h-[160px] justify-between">
           <div>
             <div className="flex justify-between items-start mb-6">
-              <h3 className="text-[17px] font-medium tracking-tight">{card.title}</h3>
+              <h2 className="text-[17px] font-medium tracking-tight">{card.title}</h2>
             </div>
 
             {card.isCustomPricing ? (
@@ -150,7 +149,7 @@ export function PricingGrid(props: PricingGridProps) {
       href: props.callUrl,
       external: /^https?:\/\//.test(props.callUrl),
       features: [
-        { text: "Includes Windows support", icon: Shield },
+        { text: "Enterprise rollout support", icon: Shield },
         { text: "Deployment guidance", icon: Shield },
         { text: "Custom commercial terms", icon: Shield },
       ],

@@ -11,6 +11,7 @@ import type {
 import {
   formatRelativeTime,
   getWorkspaceTaskLoadErrorDisplay,
+  isSandboxWorkspace,
   isTauriRuntime,
   isWindowsPlatform,
   normalizeDirectoryPath,
@@ -89,6 +90,7 @@ export type SettingsShellProps = {
   }) => Promise<void>;
   disconnectProvider: (providerId: string) => Promise<string | void>;
   removeCloudProvider: (cloudProviderId: string) => Promise<string | void>;
+  runCloudProviderSync: (reason: "sign_in" | "app_launch" | "interval" | "settings_cloud_opened") => Promise<void>;
   closeProviderAuthModal: (options?: { restorePromptFocus?: boolean }) => void;
   startProviderAuth: (providerId?: string, methodIndex?: number) => Promise<ProviderOAuthStartResult>;
   completeProviderAuthOAuth: (
@@ -295,9 +297,7 @@ export default function SettingsShell(props: SettingsShellProps) {
     t("share.workspace_fallback");
   const workspaceKindLabel = (workspace: WorkspaceInfo) =>
     workspace.workspaceType === "remote"
-      ? workspace.sandboxBackend === "docker" ||
-        Boolean(workspace.sandboxRunId?.trim()) ||
-        Boolean(workspace.sandboxContainerName?.trim())
+      ? isSandboxWorkspace(workspace)
         ? t("workspace.sandbox_badge")
         : t("workspace.remote_badge")
       : t("workspace.local_badge");
@@ -1148,6 +1148,7 @@ export default function SettingsShell(props: SettingsShellProps) {
                   openProviderAuthModal={props.openProviderAuthModal}
                   disconnectProvider={props.disconnectProvider}
                   removeCloudProvider={props.removeCloudProvider}
+                  runCloudProviderSync={props.runCloudProviderSync}
                   refreshCloudOrgProviders={props.refreshCloudOrgProviders}
                   connectCloudProvider={props.connectCloudProvider}
                   openworkServerStatus={props.openworkServerStatus}

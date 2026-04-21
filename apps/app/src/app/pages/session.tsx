@@ -2868,7 +2868,12 @@ export default function SessionView(props: SessionViewProps) {
   };
 
   const hasOpenAiProviderConnected = createMemo(() =>
-    (props.providerConnectedIds ?? []).some((id) => id.trim().toLowerCase() === "openai")
+    (props.providerConnectedIds ?? []).some((id) => {
+      const provider = props.providers.find((entry) => entry.id === id) ?? null;
+      const normalizedId = id.trim().toLowerCase();
+      const normalizedName = provider?.name?.trim().toLowerCase() ?? "";
+      return normalizedId === "openai" || normalizedName.includes("openai");
+    })
   );
   // 悟东环境下卡片引导连接 ATRouter，标志由悟东主进程在 HTML 注入时设置
   // 主进程从 secureStorage 读取 atrouter key 状态，webview 重新加载时该标志会刷新

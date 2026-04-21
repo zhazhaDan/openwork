@@ -124,7 +124,7 @@ export type WorkspaceInfo = {
   openworkWorkspaceName?: string | null;
 
   // Sandbox lifecycle metadata (desktop-managed)
-  sandboxBackend?: "docker" | null;
+  sandboxBackend?: "docker" | "microsandbox" | null;
   sandboxRunId?: string | null;
   sandboxContainerName?: string | null;
 };
@@ -210,7 +210,7 @@ export async function workspaceCreateRemote(input: {
   openworkWorkspaceName?: string | null;
 
   // Sandbox lifecycle metadata (desktop-managed)
-  sandboxBackend?: "docker" | null;
+  sandboxBackend?: "docker" | "microsandbox" | null;
   sandboxRunId?: string | null;
   sandboxContainerName?: string | null;
 }): Promise<WorkspaceList> {
@@ -245,7 +245,7 @@ export async function workspaceUpdateRemote(input: {
   openworkWorkspaceName?: string | null;
 
   // Sandbox lifecycle metadata (desktop-managed)
-  sandboxBackend?: "docker" | null;
+  sandboxBackend?: "docker" | "microsandbox" | null;
   sandboxRunId?: string | null;
   sandboxContainerName?: string | null;
 }): Promise<WorkspaceList> {
@@ -427,8 +427,24 @@ export type AppBuildInfo = {
   openworkDevMode?: boolean;
 };
 
+export type DesktopBootstrapConfig = {
+  baseUrl: string;
+  apiBaseUrl?: string | null;
+  requireSignin: boolean;
+};
+
 export async function appBuildInfo(): Promise<AppBuildInfo> {
   return invoke<AppBuildInfo>("app_build_info");
+}
+
+export async function getDesktopBootstrapConfig(): Promise<DesktopBootstrapConfig> {
+  return invoke<DesktopBootstrapConfig>("get_desktop_bootstrap_config");
+}
+
+export async function setDesktopBootstrapConfig(
+  config: DesktopBootstrapConfig,
+): Promise<DesktopBootstrapConfig> {
+  return invoke<DesktopBootstrapConfig>("set_desktop_bootstrap_config", { config });
 }
 
 export async function nukeOpenworkAndOpencodeConfigAndExit(): Promise<void> {
@@ -441,14 +457,15 @@ export type OrchestratorDetachedHost = {
   ownerToken?: string | null;
   hostToken: string;
   port: number;
-  sandboxBackend?: "docker" | null;
+  sandboxBackend?: "docker" | "microsandbox" | null;
   sandboxRunId?: string | null;
   sandboxContainerName?: string | null;
 };
 
 export async function orchestratorStartDetached(input: {
   workspacePath: string;
-  sandboxBackend?: "none" | "docker" | null;
+  sandboxBackend?: "none" | "docker" | "microsandbox" | null;
+  sandboxImageRef?: string | null;
   runId?: string | null;
   openworkToken?: string | null;
   openworkHostToken?: string | null;
@@ -456,6 +473,7 @@ export async function orchestratorStartDetached(input: {
   return invoke<OrchestratorDetachedHost>("orchestrator_start_detached", {
     workspacePath: input.workspacePath,
     sandboxBackend: input.sandboxBackend ?? null,
+    sandboxImageRef: input.sandboxImageRef ?? null,
     runId: input.runId ?? null,
     openworkToken: input.openworkToken ?? null,
     openworkHostToken: input.openworkHostToken ?? null,

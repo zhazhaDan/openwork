@@ -20,6 +20,14 @@ import ResetModal from "./components/reset-modal";
 import SkillDestinationModal from "./bundles/skill-destination-modal";
 import BundleImportModal from "./bundles/import-modal";
 import BundleStartModal from "./bundles/start-modal";
+import { useDenAuth } from "./cloud/den-auth-provider";
+import { useDesktopConfig } from "./cloud/desktop-config-provider";
+import {
+  isDesktopProviderBlocked,
+  runDesktopAppRestrictionSyncEffects,
+} from "./cloud/desktop-app-restrictions";
+import RestrictionNoticeModal from "./components/restriction-notice-modal";
+import ForcedSigninPage from "./cloud/forced-signin-page";
 import RenameWorkspaceModal from "./components/rename-workspace-modal";
 import ConnectionsModals from "./connections/modals";
 import { OpenworkServerProvider } from "./connections/openwork-server-provider";
@@ -45,6 +53,7 @@ import {
   HIDE_TITLEBAR_PREF_KEY,
   SUGGESTED_PLUGINS,
 } from "./constants";
+import { readDenBootstrapConfig } from "./lib/den";
 import type {
   Client,
   StartupPreference,
@@ -89,6 +98,7 @@ import {
 import { createProvidersStore } from "./context/providers";
 import { ModelControlsProvider } from "./app-settings/model-controls-provider";
 import { createModelControlsStore } from "./app-settings/model-controls-store";
+import { useFeatureFlagsPreferences } from "./app-settings/feature-flags-preferences";
 import { useSessionDisplayPreferences } from "./app-settings/session-display-preferences";
 import {
   shouldRedirectMissingSessionAfterScopedLoad,
@@ -151,9 +161,15 @@ type PendingInitialSessionSelection = {
   readyAt: number;
 };
 
+type RestrictionNotice = {
+  title: string;
+  message: string;
+};
+
 const STARTUP_SESSION_SNAPSHOT_KEY = "openwork.startupSessionSnapshot.v1";
 const STARTUP_SESSION_SNAPSHOT_VERSION = 1;
 const STARTUP_SESSION_SNAPSHOT_MAX_PER_WORKSPACE = 12;
+const PROVIDER_RESTRICTION_MESSAGE = "Your administrator has restricted which providers and models are allowed. Please reach out to them to add new providers and models.";
 
 type StartupSessionSnapshotEntry = {
   id: string;
@@ -173,7 +189,10 @@ type StartupSessionSnapshot = {
 };
 
 export default function App() {
+  const denAuth = useDenAuth();
+  const desktopConfig = useDesktopConfig();
   const { resetSessionDisplayPreferences } = useSessionDisplayPreferences();
+  const { microsandboxCreateSandboxEnabled } = useFeatureFlagsPreferences();
   const envOpenworkWorkspaceId =
     typeof import.meta.env?.VITE_OPENWORK_WORKSPACE_ID === "string"
       ? import.meta.env.VITE_OPENWORK_WORKSPACE_ID.trim() || null
@@ -185,13 +204,19 @@ export default function App() {
   const [creatingSession, setCreatingSession] = createSignal(false);
   const currentView = createMemo<View>(() => {
     const path = location.pathname.toLowerCase();
+    if (path.startsWith("/signin")) return "signin";
     if (path.startsWith("/session")) return "session";
     return "settings";
   });
+  const forceSigninEnabled = createMemo(() => readDenBootstrapConfig().requireSignin);
+  const blockingSigninPending = createMemo(
+    () => forceSigninEnabled() && denAuth.status() === "checking",
+  );
 
   const [settingsTab, setSettingsTabState] = createSignal<SettingsTab>("general");
   const [pendingInitialSessionSelection, setPendingInitialSessionSelection] =
     createSignal<PendingInitialSessionSelection | null>(null);
+  const [restrictionNotice, setRestrictionNotice] = createSignal<RestrictionNotice | null>(null);
 
   const goToSettings = (nextTab: SettingsTab, options?: { replace?: boolean }) => {
     setSettingsTabState(nextTab);
@@ -206,7 +231,27 @@ export default function App() {
     setSettingsTabState(nextTab);
   };
 
+  const openCreateWorkspace = () => {
+    if (desktopConfig.checkRestriction({ restriction: "blockMultipleWorkspaces" })) {
+      setRestrictionNotice({
+        title: "Additional workspaces are restricted",
+        message: "Your organization administrator has restricted access to adding additional workspaces.",
+      });
+      return;
+    }
+
+    workspaceStore.setCreateWorkspaceOpen(true);
+  };
+
+  const providerConnectionsRestricted = createMemo(() =>
+    desktopConfig.checkRestriction({ restriction: "disallowNonCloudModels" }),
+  );
+
   const setView = (next: View, sessionId?: string) => {
+    if (next === "signin") {
+      navigate("/signin");
+      return;
+    }
     if (next === "settings" && creatingSession()) {
       return;
     }
@@ -462,6 +507,25 @@ export default function App() {
   const providers = createMemo(() => globalSync.data.provider.all ?? []);
   const providerDefaults = createMemo(() => globalSync.data.provider.default ?? {});
   const providerConnectedIds = createMemo(() => globalSync.data.provider.connected ?? []);
+  const connectedProviderIdSet = createMemo(
+    () => new Set(providerConnectedIds().map((providerId) => providerId.trim())),
+  );
+  const visibleProviders = createMemo(() =>
+    providers().filter((provider) =>
+      !isDesktopProviderBlocked({
+        providerId: provider.id,
+        checkRestriction: desktopConfig.checkRestriction,
+      }) &&
+      (!providerConnectionsRestricted() || connectedProviderIdSet().has(provider.id.trim())),
+    ),
+  );
+  const visibleProviderConnectedIds = createMemo(() =>
+    providerConnectedIds().filter((providerId) =>
+      !isDesktopProviderBlocked({
+        providerId,
+        checkRestriction: desktopConfig.checkRestriction,
+      })),
+  );
   const setProviders = (value: ProviderListItem[]) => {
     globalSync.set("provider", "all", value);
   };
@@ -491,6 +555,7 @@ export default function App() {
     openworkServerStatus: () => openworkServerStore?.openworkServerStatus?.() ?? "disconnected",
     openworkServerCapabilities: () => openworkServerStore?.openworkServerCapabilities?.() ?? null,
     runtimeWorkspaceId: () => workspaceStore?.runtimeWorkspaceId?.() ?? null,
+    checkDesktopAppRestriction: desktopConfig.checkRestriction,
     focusSessionPromptSoon: () => focusSessionPromptSoon(),
     setError,
     setLastKnownConfigSnapshot,
@@ -501,7 +566,7 @@ export default function App() {
   createEffect(() => {
     const view = currentView();
     const currentTab = settingsTab();
-    if (view === "settings") return;
+    if (view === "settings" || view === "signin") return;
     setSettingsReturnTarget({
       view,
       tab: currentTab,
@@ -862,6 +927,7 @@ export default function App() {
     developerMode,
     pendingInitialSessionSelection,
     setPendingInitialSessionSelection,
+    useMicrosandboxCreateSandbox: microsandboxCreateSandboxEnabled,
   });
 
   createEffect(() => {
@@ -914,7 +980,9 @@ export default function App() {
     connectCloudProvider,
     removeCloudProvider,
     disconnectProvider,
-    openProviderAuthModal,
+    runCloudProviderSync,
+    ensureProjectProviderDisabledState,
+    openProviderAuthModal: openProviderAuthModalInternal,
     closeProviderAuthModal,
   } = createProvidersStore({
     client,
@@ -925,6 +993,7 @@ export default function App() {
     selectedWorkspaceDisplay: () => workspaceStore.selectedWorkspaceDisplay(),
     selectedWorkspaceRoot: () => workspaceStore.selectedWorkspaceRoot(),
     runtimeWorkspaceId: () => workspaceStore.runtimeWorkspaceId(),
+    checkDesktopAppRestriction: desktopConfig.checkRestriction,
     openworkServer: openworkServerStore,
     setProviders,
     setProviderDefaults,
@@ -932,6 +1001,67 @@ export default function App() {
     setDisabledProviders: (value) => globalSync.set("config", "disabled_providers", value),
     markOpencodeConfigReloadRequired: () => markOpencodeConfigReloadRequired(),
     focusPromptSoon: focusSessionPromptSoon,
+  });
+
+  const openProviderAuthModal = async (optionsArg?: {
+    returnFocusTarget?: "none" | "composer";
+    preferredProviderId?: string;
+  }) => {
+    if (providerConnectionsRestricted()) {
+      setRestrictionNotice({
+        title: "Provider connections are restricted",
+        message: PROVIDER_RESTRICTION_MESSAGE,
+      });
+      return;
+    }
+
+    await openProviderAuthModalInternal(optionsArg);
+  };
+
+  let desktopRestrictionSyncKey = "";
+  let desktopRestrictionSyncRunId = 0;
+
+  createEffect(() => {
+    const workspaceId = workspaceStore.selectedWorkspaceId().trim();
+    if (!workspaceId) {
+      desktopRestrictionSyncKey = "";
+      return;
+    }
+
+    const workspacePath = workspaceStore.selectedWorkspacePath().trim();
+    const restrictionSnapshot = JSON.stringify(desktopConfig.config());
+    const providerSnapshot = providers().map((provider) => provider.id).join(",");
+    const connectedSnapshot = providerConnectedIds().join(",");
+    const defaultModelSnapshot = modelConfig.defaultModelRef();
+    const hasClient = Boolean(client());
+    const nextKey = [
+      workspaceId,
+      workspacePath,
+      restrictionSnapshot,
+      providerSnapshot,
+      connectedSnapshot,
+      defaultModelSnapshot,
+      hasClient ? "client" : "no-client",
+    ].join("::");
+
+    if (nextKey === desktopRestrictionSyncKey) {
+      return;
+    }
+
+    desktopRestrictionSyncKey = nextKey;
+    const currentRun = ++desktopRestrictionSyncRunId;
+
+    void runDesktopAppRestrictionSyncEffects({
+      checkRestriction: desktopConfig.checkRestriction,
+      reconcileRestrictedModels: modelConfig.reconcileRestrictedModels,
+      ensureProjectProviderDisabledState,
+      onError: (error, details) => {
+        if (currentRun !== desktopRestrictionSyncRunId) {
+          return;
+        }
+        console.warn("[desktop-app-restrictions] effect failed", details, error);
+      },
+    });
   });
 
   const runtimeWorkspaceId = createMemo(() => workspaceStore.runtimeWorkspaceId());
@@ -2050,8 +2180,8 @@ export default function App() {
     return {
       settingsTab: settingsTab(),
       setSettingsTab,
-      providers: providers(),
-      providerConnectedIds: providerConnectedIds(),
+      providers: visibleProviders(),
+      providerConnectedIds: visibleProviderConnectedIds(),
       providerAuthBusy: providerAuthBusy(),
       providerAuthModalOpen: providerAuthModalOpen(),
       providerAuthError: providerAuthError(),
@@ -2064,6 +2194,7 @@ export default function App() {
       openProviderAuthModal,
       disconnectProvider,
       removeCloudProvider,
+      runCloudProviderSync,
       closeProviderAuthModal,
       startProviderAuth,
       completeProviderAuthOAuth,
@@ -2119,7 +2250,7 @@ export default function App() {
       switchWorkspace: workspaceStore.switchWorkspace,
       testWorkspaceConnection: workspaceStore.testWorkspaceConnection,
       recoverWorkspace: workspaceStore.recoverWorkspace,
-      openCreateWorkspace: () => workspaceStore.setCreateWorkspaceOpen(true),
+      openCreateWorkspace,
       connectRemoteWorkspace: workspaceStore.createRemoteWorkspaceFlow,
       openTeamBundle: bundlesStore.openTeamBundle,
       exportWorkspaceConfig: workspaceStore.exportWorkspaceConfig,
@@ -2227,7 +2358,7 @@ export default function App() {
     recoverWorkspace: workspaceStore.recoverWorkspace,
     editWorkspaceConnection: workspaceStore.openWorkspaceConnectionSettings,
     forgetWorkspace: workspaceStore.forgetWorkspace,
-    openCreateWorkspace: () => workspaceStore.setCreateWorkspaceOpen(true),
+    openCreateWorkspace,
     exportWorkspaceConfig: workspaceStore.exportWorkspaceConfig,
     exportWorkspaceBusy: workspaceStore.exportingWorkspaceConfig(),
     clientConnected: Boolean(client()),
@@ -2295,8 +2426,8 @@ export default function App() {
     providerAuthMethods: providerAuthMethods(),
     providerAuthProviders: providerAuthProviders(),
     providerAuthPreferredProviderId: providerAuthPreferredProviderId(),
-    providers: providers(),
-    providerConnectedIds: providerConnectedIds(),
+    providers: visibleProviders(),
+    providerConnectedIds: visibleProviderConnectedIds(),
     sessionStatusById: activeSessionStatusById(),
     hasEarlierMessages: selectedSessionHasEarlierMessages(),
     loadingEarlierMessages: selectedSessionLoadingEarlierMessages(),
@@ -2349,6 +2480,27 @@ export default function App() {
   createEffect(() => {
     const rawPath = location.pathname.trim();
     const path = rawPath.toLowerCase();
+
+    if (forceSigninEnabled()) {
+      if (denAuth.status() === "checking") {
+        return;
+      }
+
+      if (!denAuth.isSignedIn()) {
+        if (path !== "/signin") {
+          navigate("/signin", { replace: true });
+        }
+        return;
+      }
+
+      if (path === "/signin") {
+        navigate("/session", { replace: true });
+        return;
+      }
+    } else if (path === "/signin") {
+      navigate("/session", { replace: true });
+      return;
+    }
 
     if (path === "" || path === "/") {
       navigate("/session", { replace: true });
@@ -2439,6 +2591,10 @@ export default function App() {
                     />
                   </Show>
             <Switch>
+              <Match when={blockingSigninPending()}>{null}</Match>
+              <Match when={currentView() === "signin"}>
+                <ForcedSigninPage developerMode={developerMode()} />
+              </Match>
               <Match when={currentView() === "session"}>
                 <SessionView {...sessionProps()} />
               </Match>
@@ -2633,6 +2789,13 @@ export default function App() {
           return busy() && busyLabel() === "status.creating_workspace";
         })()}
         submittingProgress={workspaceStore.sandboxCreateProgress?.() ?? null}
+      />
+
+      <RestrictionNoticeModal
+        open={Boolean(restrictionNotice())}
+        onClose={() => setRestrictionNotice(null)}
+        title={restrictionNotice()?.title ?? "Restriction"}
+        message={restrictionNotice()?.message ?? ""}
       />
 
       <SkillDestinationModal

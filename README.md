@@ -12,7 +12,12 @@
   <img src="./app-demo.gif" alt="OpenWork demo" width="800" />
 </p>
 
-OpenWork is designed around the idea that you can easily ship your agentic workflows as a repeatable, productized process.
+OpenWork is designed around the idea that you can easily ship your agentic workflows for your team as a repeatable, productized process.
+
+> [!TIP]
+> **Looking for an [Enterprise Plan](https://openworklabs.com/enterprise)?** [Speak with our Sales Team today](https://cal.com/team/openwork/enterprise)
+>
+> Get enhanced capabilities including feature prioritization, SSO, SLA support, LTS versions, and more.
 
 ## Alternate UIs
 - **OpenWork Orchestrator (CLI host)**: run OpenCode + OpenWork server without the desktop UI.

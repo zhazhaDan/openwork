@@ -1,9 +1,12 @@
 import { Show, createMemo } from "solid-js";
-import { ArrowLeft, MessageCircle, Settings } from "lucide-solid";
+import { BookOpen, MessageCircle, Settings } from "lucide-solid";
 
 import { t } from "../../i18n";
 import { useConnections } from "../connections/provider";
+import { usePlatform } from "../context/platform";
 import type { OpenworkServerStatus } from "../lib/openwork-server";
+
+const DOCS_URL = "https://openworklabs.com/docs";
 
 type StatusBarProps = {
   clientConnected: boolean;
@@ -23,6 +26,7 @@ type StatusBarProps = {
 
 export default function StatusBar(props: StatusBarProps) {
   const connections = useConnections();
+  const platform = usePlatform();
   const providerConnectedCount = createMemo(() => props.providerConnectedIds?.length ?? 0);
   const mcpConnectedCount = createMemo(
     () => Object.values(connections.mcpStatuses() ?? {}).filter((status) => status?.status === "connected").length,
@@ -104,7 +108,17 @@ export default function StatusBar(props: StatusBarProps) {
         <div class="flex items-center gap-1.5">
           <button
             type="button"
-            class="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+            class="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+            onClick={() => platform.openLink(DOCS_URL)}
+            title={t("status.open_docs")}
+            aria-label={t("status.open_docs")}
+          >
+            <BookOpen class="h-4 w-4" />
+            <span class="text-[11px] font-medium">{t("status.docs")}</span>
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
             onClick={props.onSendFeedback}
             title={t("status.send_feedback")}
             aria-label={t("status.send_feedback")}
@@ -115,15 +129,12 @@ export default function StatusBar(props: StatusBarProps) {
           <Show when={props.showSettingsButton !== false}>
             <button
               type="button"
-              class="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
               onClick={props.onOpenSettings}
               title={props.settingsOpen ? t("status.back") : t("status.settings")}
               aria-label={props.settingsOpen ? t("status.back") : t("status.settings")}
             >
-              <Show when={props.settingsOpen} fallback={<Settings class="h-4 w-4" />}>
-                <ArrowLeft class="h-4 w-4" />
-              </Show>
-              <span>{props.settingsOpen ? t("status.back_to_session") : t("status.settings")}</span>
+              <Settings class="h-4 w-4" />
             </button>
           </Show>
         </div>
