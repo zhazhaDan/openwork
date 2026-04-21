@@ -144,7 +144,7 @@ const SANDBOX_INTERNAL_OPENWORK_PORT = DEFAULT_OPENWORK_PORT;
 // mode we keep the *internal* port stable and only vary the published host
 // port to avoid collisions.
 const SANDBOX_INTERNAL_OPENCODE_ROUTER_HEALTH_PORT = 3005;
-const OPENWORK_DEV_DATA_DIR = "openwork-dev-data";
+const OPENWORK_DEV_DATA_DIR = "wudong-dev-data";
 
 const SANDBOX_OPENCODE_GLOBAL_CONFIG_CONTAINER_PATH =
   "/persist/.config/opencode";
@@ -2769,7 +2769,7 @@ function resolveRouterDataDir(flags: Map<string, string | boolean>): string {
 }
 
 function resolveWorkspaceOpenworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".tron", "openwork.json");
+  return join(workspaceRoot, ".tron", "wudong.json");
 }
 
 function resolveOpencodeRouterConfigPath(): string {

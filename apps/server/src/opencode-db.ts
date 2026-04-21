@@ -13,7 +13,7 @@ type SeedMessage = {
 const DEFAULT_AGENT = "openwork";
 const DEFAULT_PROVIDER = "openai";
 const DEFAULT_MODEL = "gpt-5.4";
-const OPENWORK_DEV_DATA_DIRS = ["openwork-dev-data", "opencode-dev"];
+const OPENWORK_DEV_DATA_DIRS = ["wudong-dev-data", "opencode-dev"];
 
 function truthy(value: string | undefined): boolean {
   if (!value) return false;

@@ -809,11 +809,11 @@ function resolveBrowserProvider(): Capabilities["toolProviders"]["browser"] {
 }
 
 function resolveInboxDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".tron", "openwork", "inbox");
+  return join(workspaceRoot, ".tron", "wudong", "inbox");
 }
 
 function resolveOutboxDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".tron", "openwork", "outbox");
+  return join(workspaceRoot, ".tron", "wudong", "outbox");
 }
 
 export function normalizeWorkspaceRelativePath(input: string, options: { allowSubdirs: boolean }): string {
@@ -5382,7 +5382,7 @@ async function readOpenworkConfig(workspaceRoot: string): Promise<Record<string,
     const raw = await readFile(path, "utf8");
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    throw new ApiError(422, "invalid_json", "Failed to parse openwork.json");
+    throw new ApiError(422, "invalid_json", "Failed to parse wudong.json");
   }
 }
 
