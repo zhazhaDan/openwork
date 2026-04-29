@@ -20,15 +20,25 @@ export type InboundMessage = {
 
 export type MessageHandler = (message: InboundMessage) => Promise<void> | void;
 
+export type FeishuOutboundMeta = {
+  kind?: "reply" | "system" | "tool";
+  model?: string;
+  agent?: string;
+};
+
 export type FeishuAdapter = {
   name: "feishu";
   identityId: string;
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage(peerId: string, message: { parts: OutboundMessagePart[] }): Promise<MessageDeliveryResult>;
+  sendMessage(
+    peerId: string,
+    message: { parts: OutboundMessagePart[]; meta?: FeishuOutboundMeta },
+  ): Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendTyping?(peerId: string): Promise<void>;
+  getBotName?(): string | null;
 };
 
 const MAX_TEXT_LENGTH = 30_000;
@@ -71,6 +81,25 @@ export function createFeishuAdapter(
 
   let wsClient: any = null;
   let botOpenId: string | null = null;
+  let botName: string | null = null;
+
+  // ---------------------------------------------------------------------------
+  // Read-receipt (reaction) — Feishu bots do not have a true "read" API for
+  // P2P / group messages, so we use an emoji reaction (👀) as the visible ack.
+  // Doc: https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/create
+  // ---------------------------------------------------------------------------
+
+  const markRead = async (messageId: string) => {
+    if (!messageId) return;
+    try {
+      await (client.im.messageReaction.create as any)({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: "OK" } },
+      });
+    } catch (error) {
+      log.warn({ error, messageId }, "feishu markRead reaction failed");
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Message content parsing
@@ -161,6 +190,12 @@ export function createFeishuAdapter(
       }
 
       const { text: rawText, imageKeys } = parseMessageContent(msgType, contentStr);
+
+      // Acknowledge receipt with an emoji reaction (visible "read" indicator).
+      const messageId = typeof message.message_id === "string" ? message.message_id : "";
+      if (messageId) {
+        void markRead(messageId);
+      }
 
       // Strip @bot mention from text.
       let text = rawText;
@@ -256,9 +291,110 @@ export function createFeishuAdapter(
   // Outbound
   // ---------------------------------------------------------------------------
 
+  // Feishu card `markdown` element does not support GFM tables — pipes render
+  // as raw text. Convert table blocks into ASCII-aligned plain-text so they
+  // remain legible inside the card.
+  const visualWidth = (value: string) => {
+    let width = 0;
+    for (const ch of value) {
+      const code = ch.codePointAt(0) ?? 0;
+      // CJK / fullwidth characters take 2 columns in monospace.
+      if (
+        (code >= 0x1100 && code <= 0x115f) ||
+        (code >= 0x2e80 && code <= 0x303e) ||
+        (code >= 0x3041 && code <= 0x33ff) ||
+        (code >= 0x3400 && code <= 0x4dbf) ||
+        (code >= 0x4e00 && code <= 0x9fff) ||
+        (code >= 0xa000 && code <= 0xa4cf) ||
+        (code >= 0xac00 && code <= 0xd7a3) ||
+        (code >= 0xf900 && code <= 0xfaff) ||
+        (code >= 0xfe30 && code <= 0xfe4f) ||
+        (code >= 0xff00 && code <= 0xff60) ||
+        (code >= 0xffe0 && code <= 0xffe6)
+      ) {
+        width += 2;
+      } else if (code >= 0x20) {
+        width += 1;
+      }
+    }
+    return width;
+  };
+
+  const padCell = (value: string, target: number) => {
+    const pad = Math.max(0, target - visualWidth(value));
+    return value + " ".repeat(pad);
+  };
+
+  const splitRow = (line: string): string[] => {
+    let body = line.trim();
+    if (body.startsWith("|")) body = body.slice(1);
+    if (body.endsWith("|")) body = body.slice(0, -1);
+    return body.split("|").map((c) => c.trim());
+  };
+
+  const isSeparatorRow = (line: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
+
+  const formatTable = (rows: string[][]): string => {
+    const colCount = Math.max(...rows.map((r) => r.length));
+    const widths: number[] = Array(colCount).fill(0);
+    for (const row of rows) {
+      for (let i = 0; i < colCount; i += 1) {
+        widths[i] = Math.max(widths[i], visualWidth(row[i] ?? ""));
+      }
+    }
+    const formatRow = (row: string[]) =>
+      "| " + Array.from({ length: colCount }, (_, i) => padCell(row[i] ?? "", widths[i])).join(" | ") + " |";
+    const sep = "|" + widths.map((w) => "-".repeat(w + 2)).join("|") + "|";
+    const lines = [formatRow(rows[0]), sep, ...rows.slice(1).map(formatRow)];
+    return "```\n" + lines.join("\n") + "\n```";
+  };
+
+  const renderMarkdownForFeishu = (markdown: string): string => {
+    const lines = markdown.split(/\r?\n/);
+    const out: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const next = lines[i + 1];
+      const looksHeader = line.includes("|") && next !== undefined && isSeparatorRow(next);
+      if (looksHeader) {
+        const rows: string[][] = [splitRow(line)];
+        i += 2;
+        while (i < lines.length && lines[i].includes("|") && lines[i].trim().length > 0) {
+          rows.push(splitRow(lines[i]));
+          i += 1;
+        }
+        out.push(formatTable(rows));
+        continue;
+      }
+      out.push(line);
+      i += 1;
+    }
+    return out.join("\n");
+  };
+
+  const buildReplyCard = (markdown: string, meta?: FeishuOutboundMeta) => {
+    const rendered = renderMarkdownForFeishu(markdown);
+    const elements: any[] = [{ tag: "markdown", content: rendered }];
+    const noteParts: string[] = [];
+    if (meta?.model) noteParts.push(`Model: ${meta.model}`);
+    if (meta?.agent) noteParts.push(`Agent: ${meta.agent}`);
+    if (noteParts.length > 0) {
+      elements.push({ tag: "hr" });
+      elements.push({
+        tag: "note",
+        elements: [{ tag: "plain_text", content: noteParts.join("  ·  ") }],
+      });
+    }
+    return {
+      config: { wide_screen_mode: true },
+      elements,
+    };
+  };
+
   const sendMessageInternal = async (
     peerId: string,
-    message: { parts: OutboundMessagePart[] },
+    message: { parts: OutboundMessagePart[]; meta?: FeishuOutboundMeta },
   ): Promise<MessageDeliveryResult> => {
     const chatId = parseFeishuPeerId(peerId);
     if (!chatId) {
@@ -272,26 +408,51 @@ export function createFeishuAdapter(
 
     const partResults: MessageDeliveryResult["partResults"] = [];
     let sentParts = 0;
+    const meta = message.meta;
+    const renderAsCard = meta?.kind === "reply";
 
     for (let index = 0; index < message.parts.length; index += 1) {
       const part = message.parts[index];
       try {
         if (part.type === "text") {
-          const chunks = chunkText(part.text, MAX_TEXT_LENGTH);
-          for (const chunk of chunks) {
-            await withDeliveryRetry(
-              "feishu.sendMessage",
-              () =>
-                client.im.message.create({
-                  params: { receive_id_type: receiveIdType },
-                  data: {
-                    receive_id: chatId,
-                    msg_type: "text",
-                    content: JSON.stringify({ text: chunk }),
-                  },
-                }),
-              { logger: log },
-            );
+          if (renderAsCard) {
+            const chunks = chunkText(part.text, MAX_TEXT_LENGTH);
+            for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx += 1) {
+              const chunk = chunks[chunkIdx];
+              // Only attach the model/agent footer to the final chunk.
+              const chunkMeta = chunkIdx === chunks.length - 1 ? meta : undefined;
+              const card = buildReplyCard(chunk, chunkMeta);
+              await withDeliveryRetry(
+                "feishu.sendCard",
+                () =>
+                  client.im.message.create({
+                    params: { receive_id_type: receiveIdType },
+                    data: {
+                      receive_id: chatId,
+                      msg_type: "interactive",
+                      content: JSON.stringify(card),
+                    },
+                  }),
+                { logger: log },
+              );
+            }
+          } else {
+            const chunks = chunkText(part.text, MAX_TEXT_LENGTH);
+            for (const chunk of chunks) {
+              await withDeliveryRetry(
+                "feishu.sendMessage",
+                () =>
+                  client.im.message.create({
+                    params: { receive_id_type: receiveIdType },
+                    data: {
+                      receive_id: chatId,
+                      msg_type: "text",
+                      content: JSON.stringify({ text: chunk }),
+                    },
+                  }),
+                { logger: log },
+              );
+            }
           }
         } else {
           // File upload: first upload to Feishu, then send as message.
@@ -416,15 +577,37 @@ export function createFeishuAdapter(
     async start() {
       log.debug("feishu adapter starting");
 
-      // Resolve bot open_id.
+      // Resolve bot open_id and display name.
       try {
         const botInfo = await (client.contact.user.get as any)({
           path: { user_id: "me" },
           params: { user_id_type: "open_id" },
         });
-        botOpenId = botInfo?.data?.user?.open_id ?? null;
+        const user = botInfo?.data?.user;
+        botOpenId = user?.open_id ?? null;
+        const resolvedName =
+          (typeof user?.name === "string" && user.name.trim()) ||
+          (typeof user?.nickname === "string" && user.nickname.trim()) ||
+          "";
+        if (resolvedName) botName = resolvedName;
       } catch {
-        // Some SDK versions use a different API. Fallback: leave botOpenId as null.
+        // contact.user.get may not be available; fall back to bot.info.
+        log.debug("feishu contact.user.get failed; trying bot.info");
+      }
+
+      // Fallback / supplementary: bot.info gives the canonical app/bot name.
+      if (!botName) {
+        try {
+          const info = await (client as any).bot?.info?.get?.();
+          const bot = info?.data?.bot ?? info?.bot;
+          const name = typeof bot?.app_name === "string" ? bot.app_name.trim() : "";
+          if (name) botName = name;
+        } catch {
+          log.warn("feishu could not resolve bot name");
+        }
+      }
+
+      if (!botOpenId) {
         log.warn("feishu could not resolve bot open_id; self-message filtering may not work");
       }
 
@@ -444,7 +627,7 @@ export function createFeishuAdapter(
       });
 
       await wsClient.start({ eventDispatcher });
-      log.info({ botOpenId }, "feishu adapter started");
+      log.info({ botOpenId, botName }, "feishu adapter started");
     },
     async stop() {
       if (wsClient) {
@@ -462,7 +645,7 @@ export function createFeishuAdapter(
       }
       log.info("feishu adapter stopped");
     },
-    async sendMessage(peerId: string, message: { parts: OutboundMessagePart[] }) {
+    async sendMessage(peerId: string, message: { parts: OutboundMessagePart[]; meta?: FeishuOutboundMeta }) {
       return sendMessageInternal(peerId, message);
     },
     async sendText(peerId: string, text: string) {
@@ -475,6 +658,9 @@ export function createFeishuAdapter(
     async sendTyping(_peerId: string) {
       // Feishu does not have a native typing indicator API.
       log.debug("feishu sendTyping: no-op (not supported)");
+    },
+    getBotName() {
+      return botName;
     },
   };
 }

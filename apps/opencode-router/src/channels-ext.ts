@@ -106,6 +106,12 @@ export type ExtHealthHandlers = {
 // Adapter type (mirrors bridge.ts Adapter)
 // ---------------------------------------------------------------------------
 
+type SendMeta = {
+  kind?: "reply" | "system" | "tool";
+  model?: string;
+  agent?: string;
+};
+
 type Adapter = {
   key: string;
   name: ChannelName;
@@ -113,10 +119,11 @@ type Adapter = {
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[] }) => Promise<MessageDeliveryResult>;
+  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: SendMeta }) => Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendFile?: (peerId: string, filePath: string, caption?: string) => Promise<void>;
   sendTyping?: (peerId: string) => Promise<void>;
+  getBotName?: () => string | null;
 };
 
 type AdapterStartResult =

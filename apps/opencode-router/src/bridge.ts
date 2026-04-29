@@ -21,6 +21,12 @@ import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
 import { registerExtAdapters, createExtBridgeHandlers, isExtChannel, isValidChannel } from "./channels-ext.js";
 
+type SendMeta = {
+  kind?: OutboundKind;
+  model?: string;
+  agent?: string;
+};
+
 type Adapter = {
   key: string;
   name: ChannelName;
@@ -28,10 +34,11 @@ type Adapter = {
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[] }) => Promise<MessageDeliveryResult>;
+  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: SendMeta }) => Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendFile?: (peerId: string, filePath: string, caption?: string) => Promise<void>;
   sendTyping?: (peerId: string) => Promise<void>;
+  getBotName?: () => string | null;
 };
 
 type AdapterStartResult =
@@ -654,7 +661,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     parts: OutboundMessagePart[],
-    options: { kind?: OutboundKind; display?: boolean } = {},
+    options: { kind?: OutboundKind; display?: boolean; meta?: { model?: string; agent?: string } } = {},
   ): Promise<MessageDeliveryResult> => {
     const adapter = adapters.get(adapterKey(channel, identityId));
     if (!adapter) {
@@ -687,7 +694,11 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     if (adapter.sendMessage) {
       try {
-        return await adapter.sendMessage(peerId, { parts });
+        const sendMeta: SendMeta | undefined =
+          options.kind || options.meta
+            ? { kind, ...(options.meta?.model ? { model: options.meta.model } : {}), ...(options.meta?.agent ? { agent: options.meta.agent } : {}) }
+            : undefined;
+        return await adapter.sendMessage(peerId, { parts, ...(sendMeta ? { meta: sendMeta } : {}) });
       } catch (error) {
         const classified = classifyDeliveryError(error);
         return {
@@ -1661,7 +1672,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     text: string,
-    options: { kind?: OutboundKind; display?: boolean } = {},
+    options: { kind?: OutboundKind; display?: boolean; meta?: { model?: string; agent?: string } } = {},
   ) {
     const parts: OutboundMessagePart[] =
       text.startsWith("FILE:") && text.substring(5).trim()
@@ -1993,7 +2004,20 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
         if (reply) {
           logger.debug({ sessionID, replyLength: reply.length }, "reply built");
-          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
+          const trackedModel = sessionModels.get(key);
+          const modelLabel = effectiveModel
+            ? `${effectiveModel.providerID}/${effectiveModel.modelID}`
+            : trackedModel
+              ? `${trackedModel.providerID}/${trackedModel.modelID}`
+              : null;
+          const replyMeta = {
+            ...(modelLabel ? { model: modelLabel } : {}),
+            ...(messagingAgent.selectedAgent ? { agent: messagingAgent.selectedAgent } : {}),
+          };
+          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, {
+            kind: "reply",
+            ...(replyMeta.model || replyMeta.agent ? { meta: replyMeta } : {}),
+          });
         } else {
           logger.warn(
             { sessionID, partTypes: parts.map((part) => part.type), ignoredCount: parts.filter((part) => part.ignored).length },
@@ -2177,7 +2201,11 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     peerKey: string;
     directory: string;
   }): Promise<string> {
-    const title = `opencode-router ${input.channel}/${input.identityId} ${input.peerId}`;
+    const adapter = adapters.get(adapterKey(input.channel, input.identityId));
+    const botName = adapter?.getBotName?.() ?? null;
+    const title = botName
+      ? `${botName} · ${input.peerId}`
+      : `opencode-router ${input.channel}/${input.identityId} ${input.peerId}`;
     const session = await getClient(input.directory).session.create({
       title,
       permission: buildPermissionRules(config.permissionMode),
