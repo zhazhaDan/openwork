@@ -169,7 +169,7 @@ async function runStart(pathOverride?: string, options?: { opencodeUrl?: string 
   if (!process.env.OPENCODE_DIRECTORY) {
     process.env.OPENCODE_DIRECTORY = config.opencodeDirectory;
   }
-  const bridge = await startBridge(config, logger, reporter);
+  const bridge = await startBridge(config, logger, reporter, { routerVersion: VERSION });
   if (process.stdout.isTTY) {
     reporter.onStatus?.("Commands: opencode-router identities, opencode-router bindings, opencode-router status");
   }

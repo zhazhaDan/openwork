@@ -82,6 +82,8 @@ type BridgeDeps = {
   adapters?: Map<string, Adapter>;
   disableEventStream?: boolean;
   disableHealthServer?: boolean;
+  /** opencode-router 自身版本，写入 /health 响应供上游对账 */
+  routerVersion?: string;
 };
 
 export type BridgeReporter = {
@@ -760,6 +762,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       config.healthPort,
       (): HealthSnapshot => ({
         ok: opencodeHealthy,
+        version: deps.routerVersion ?? "0.0.0",
         opencode: {
           url: config.opencodeUrl,
           healthy: opencodeHealthy,

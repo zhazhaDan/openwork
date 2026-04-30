@@ -7,6 +7,11 @@ import { handleExtChannelRoute, type ExtHealthHandlers } from "./channels-ext.js
 
 export type HealthSnapshot = {
   ok: boolean;
+  /**
+   * opencode-router 自身版本（来自 package.json / build-time __OPENCODE_ROUTER_VERSION__）。
+   * 上游消费方可据此跟分发的二进制版本对账，防止接口漂移。
+   */
+  version: string;
   opencode: {
     url: string;
     healthy: boolean;
