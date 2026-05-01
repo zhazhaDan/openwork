@@ -7,7 +7,7 @@ import type {
   Session,
 } from "@opencode-ai/sdk/v2/client";
 import type { createClient } from "./lib/opencode";
-import type { OpencodeConfigFile, ScheduledJob as TauriScheduledJob, WorkspaceInfo } from "./lib/tauri";
+import type { OpencodeConfigFile, WorkspaceInfo } from "./lib/desktop";
 
 export type Client = ReturnType<typeof createClient>;
 
@@ -154,17 +154,27 @@ export type View = "settings" | "session" | "signin";
 
 export type StartupPreference = "local" | "server";
 
-export type EngineRuntime = "direct" | "openwork-orchestrator";
+/**
+ * Release channel the desktop app is subscribed to.
+ *
+ * - "stable": default. Auto-updates from the rolling stable GitHub release.
+ * - "alpha": macOS-only. Auto-updates from the rolling alpha release that
+ *   every merge to `dev` publishes to.
+ *
+ * See `apps/app/src/app/lib/release-channels.ts` for URL resolution.
+ */
+export type ReleaseChannel = "stable" | "alpha";
+
+export type EngineRuntime = "direct";
 
 export type OnboardingStep = "welcome" | "local" | "server" | "connecting";
 
 export type SettingsTab =
   | "general"
   | "den"
-  | "automations"
   | "skills"
   | "extensions"
-  | "messaging"
+  | "environment"
   | "advanced"
   | "appearance"
   | "updates"
@@ -303,6 +313,8 @@ export type SuggestedPlugin = {
 
 export type PluginScope = "project" | "global";
 
+export type McpServerSource = "config.project" | "config.global" | "config.remote";
+
 export type McpServerConfig = {
   type: "remote" | "local";
   url?: string;
@@ -317,6 +329,7 @@ export type McpServerConfig = {
 export type McpServerEntry = {
   name: string;
   config: McpServerConfig;
+  source?: McpServerSource;
 };
 
 export type McpStatus =
@@ -407,8 +420,6 @@ export type WorkspaceState = {
   path: string;
   root: string;
 };
-
-export type ScheduledJob = TauriScheduledJob;
 
 export type PluginState = {
   scope: PluginScope;

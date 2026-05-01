@@ -1,17 +1,15 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile, rm, readdir, rename, stat } from "node:fs/promises";
-import { createHash, randomInt } from "node:crypto";
+import { readFile, writeFile, rm, readdir, rename, stat, appendFile, mkdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { ApprovalRequest, Capabilities, ServerConfig, WorkspaceInfo, Actor, ReloadReason, ReloadTrigger, TokenScope } from "./types.js";
 import { ApprovalService } from "./approvals.js";
 import { addPlugin, listPlugins, normalizePluginSpec, removePlugin } from "./plugins.js";
 import { sanitizePortableOpencodeConfig } from "./portable-opencode.js";
-import { addMcp, listMcp, removeMcp } from "./mcp.js";
+import { addMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
 import { deleteSkill, listSkills, upsertSkill } from "./skills.js";
 import { installHubSkill, listHubSkills } from "./skill-hub.js";
 import { deleteCommand, listCommands, repairCommands, upsertCommand } from "./commands.js";
-import { deleteScheduledJob, listScheduledJobs, resolveScheduledJob } from "./scheduler.js";
 import { ApiError, formatError } from "./errors.js";
 import { readJsoncFile, updateJsoncPath, updateJsoncTopLevel, writeJsoncFile } from "./jsonc.js";
 import { recordAudit, readAuditEntries, readLastAudit } from "./audit.js";
@@ -24,6 +22,7 @@ import { workspaceIdForPath } from "./workspaces.js";
 import { ensureWorkspaceFiles, readRawOpencodeConfig } from "./workspace-init.js";
 import { sanitizeCommandName, validateMcpName } from "./validators.js";
 import { TokenService } from "./tokens.js";
+import { EnvService, EnvStoreReadError, InvalidEnvKeyError, isValidEnvKey } from "./env-file.js";
 import { TOY_UI_CSS, TOY_UI_FAVICON_SVG, TOY_UI_HTML, TOY_UI_JS, cssResponse, htmlResponse, jsResponse, svgResponse } from "./toy-ui.js";
 import { FileSessionStore } from "./file-sessions.js";
 import {
@@ -114,7 +113,7 @@ function logRequest(input: {
   response: Response;
   durationMs: number;
   authMode: AuthMode;
-  proxyService?: "opencode" | "opencode-router";
+  proxyService?: "opencode";
   proxyBaseUrl?: string;
   error?: string;
 }) {
@@ -142,8 +141,7 @@ function logRequest(input: {
   logger.log(level, message, attributes);
 }
 
-type AuthMode = "none" | "client" | "host";
-
+type AuthMode = "none" | "client" | "host" | "host-token";
 
 function parseWorkspaceMount(pathname: string): { workspaceId: string; restPath: string } | null {
   if (!pathname.startsWith("/w/")) return null;
@@ -184,6 +182,10 @@ function assertOpencodeProxyAllowed(actor: Actor, method: string, proxyPath: str
   }
 }
 
+function isSessionCommandProxyRequest(method: string, proxyPath: string) {
+  return method === "POST" && /^\/session\/[^/]+\/command$/.test(normalizeOpencodeProxyPath(proxyPath));
+}
+
 interface Route {
   method: string;
   regex: RegExp;
@@ -207,13 +209,14 @@ export function startServer(config: ServerConfig) {
   const approvals = new ApprovalService(config.approval);
   const reloadEvents = new ReloadEventStore();
   const tokens = new TokenService(config);
+  const env = new EnvService();
   const logger = createServerLogger(config);
   let watcherHandle = startReloadWatchers({ config, reloadEvents, logger });
   const restartReloadWatchers = () => {
     watcherHandle.close();
     watcherHandle = startReloadWatchers({ config, reloadEvents, logger });
   };
-  const routes = createRoutes(config, approvals, tokens, restartReloadWatchers);
+  const routes = createRoutes(config, approvals, tokens, env, restartReloadWatchers);
 
   const serverOptions: {
     hostname: string;
@@ -226,7 +229,7 @@ export function startServer(config: ServerConfig) {
       const url = new URL(request.url);
       const startedAt = Date.now();
       let authMode: AuthMode = "none";
-      let proxyService: "opencode" | "opencode-router" | undefined;
+      let proxyService: "opencode" | undefined;
       let proxyBaseUrl: string | undefined;
       let errorMessage: string | undefined;
 
@@ -337,11 +340,14 @@ export function startServer(config: ServerConfig) {
 
       authMode = route.auth;
       try {
-        const actor = route.auth === "host"
-          ? await requireHost(request, config, tokens)
-          : route.auth === "client"
-            ? await requireClient(request, config, tokens)
-            : undefined;
+        const actor =
+          route.auth === "host-token"
+            ? requireHostToken(request, config)
+            : route.auth === "host"
+              ? await requireHost(request, config, tokens)
+              : route.auth === "client"
+                ? await requireClient(request, config, tokens)
+                : undefined;
         const response = await route.handler({
           request,
           url,
@@ -425,17 +431,25 @@ async function fetchOpencodeJson(
 
   const url = new URL(baseUrl);
   url.pathname = path.startsWith("/") ? path : `/${path}`;
+  const directory = resolveOpencodeDirectory(workspace);
   if (init.query instanceof URLSearchParams) {
-    url.search = init.query.toString();
+    const params = new URLSearchParams(init.query);
+    if (directory && !params.has("directory")) {
+      params.set("directory", directory);
+    }
+    url.search = params.toString();
   } else if (init.query) {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(init.query)) {
       if (value === undefined || value === null) continue;
       params.set(key, String(value));
     }
+    if (directory && !params.has("directory")) {
+      params.set("directory", directory);
+    }
     url.search = params.toString();
   } else {
-    url.search = "";
+    url.search = directory ? new URLSearchParams({ directory }).toString() : "";
   }
 
   const headers = new Headers();
@@ -468,7 +482,6 @@ async function fetchOpencodeJson(
   }
   return json;
 }
-
 
 async function proxyOpencodeRequest(input: {
   config: ServerConfig;
@@ -504,15 +517,44 @@ async function proxyOpencodeRequest(input: {
 
   const method = input.request.method.toUpperCase();
   const body = method === "GET" || method === "HEAD" ? undefined : input.request.body;
+  if (isSessionCommandProxyRequest(method, proxyPath)) {
+    const bufferedBody = body ? await input.request.arrayBuffer() : undefined;
+    void fetch(targetUrl, {
+      method,
+      headers,
+      body: bufferedBody,
+    }).catch(() => {
+      // Command failures are surfaced through the OpenCode event stream.
+    });
+    return jsonResponse({ ok: true, accepted: true });
+  }
   const response = await fetch(targetUrl, {
     method,
     headers,
     body,
   });
 
-  return response;
+  return sanitizeProxyResponse(response);
 }
 
+/**
+ * Strip hop-by-hop and transport-level headers that Bun's native fetch keeps
+ * in the upstream response even after it has already decoded the body for us.
+ * Without this the browser sees `content-encoding: gzip` on a plain-text
+ * payload and bails out with ERR_CONTENT_DECODING_FAILED, breaking any UI
+ * code that reaches through /opencode/* (including session.create).
+ */
+function sanitizeProxyResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("transfer-encoding");
+  headers.delete("content-length");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -520,7 +562,6 @@ function jsonResponse(data: unknown, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
-
 
 function withCors(response: Response, request: Request, config: ServerConfig) {
   const origin = request.headers.get("origin");
@@ -539,7 +580,7 @@ function withCors(response: Response, request: Request, config: ServerConfig) {
     "Access-Control-Allow-Headers",
     "Authorization, Content-Type, X-OpenWork-Host-Token, X-OpenWork-Client-Id, X-OpenCode-Directory, X-Opencode-Directory, x-opencode-directory",
   );
-  headers.set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   headers.set("Vary", "Origin");
   return new Response(response.body, { status: response.status, headers });
 }
@@ -557,6 +598,14 @@ async function requireClient(request: Request, config: ServerConfig, tokens: Tok
   }
   const clientId = request.headers.get("x-openwork-client-id") ?? undefined;
   return { type: "remote", clientId, tokenHash: hashToken(token), scope };
+}
+
+function requireHostToken(request: Request, config: ServerConfig): Actor {
+  const hostToken = request.headers.get("x-openwork-host-token");
+  if (hostToken && hostToken === config.hostToken) {
+    return { type: "host", tokenHash: hashToken(hostToken), scope: "owner" };
+  }
+  throw new ApiError(401, "unauthorized", "Invalid host token");
 }
 
 async function requireHost(request: Request, config: ServerConfig, tokens: TokenService): Promise<Actor> {
@@ -589,7 +638,6 @@ function buildCapabilities(config: ServerConfig): Capabilities {
   const maxBytes = resolveInboxMaxBytes();
   const toyUiEnabled = resolveToyUiEnabled();
   const browserProvider = resolveBrowserProvider();
-  const opencodeRouterConfigured = Boolean(parseInteger(process.env.OPENCODE_ROUTER_HEALTH_PORT));
   const opencodeConfigured = config.workspaces.some((workspace) => Boolean(workspace.baseUrl?.trim()));
   return {
     schemaVersion,
@@ -613,7 +661,6 @@ function buildCapabilities(config: ServerConfig): Capabilities {
     tokens: { scoped: true, scopes: ["owner", "collaborator", "viewer"] },
     proxy: {
       opencode: opencodeConfigured,
-      opencodeRouter: opencodeRouterConfigured,
     },
     toolProviders: {
       browser: browserProvider,
@@ -669,6 +716,15 @@ function resolveToyUiEnabled(): boolean {
   return ["1", "true", "yes", "on"].includes(raw);
 }
 
+// Dev-only log sink target. When OPENWORK_DEV_LOG_FILE is set to a path, the
+// /dev/log endpoint accepts JSON payloads and appends them to that file so an
+// operator can `tail -f` the file to see live browser activity. Returning null
+// disables the endpoint entirely.
+function resolveDevLogPath(): string | null {
+  const raw = (process.env.OPENWORK_DEV_LOG_FILE ?? "").trim();
+  return raw.length > 0 ? raw : null;
+}
+
 function resolveBrowserProvider(): Capabilities["toolProviders"]["browser"] {
   const raw = (process.env.OPENWORK_BROWSER_PROVIDER ?? "").trim().toLowerCase();
   if (raw === "sandbox-headless") {
@@ -722,6 +778,13 @@ export function normalizeWorkspaceRelativePath(input: string, options: { allowSu
     }
   }
   return parts.join("/");
+}
+
+export function isSupportedWorkspaceTextFilePath(relativePath: string): boolean {
+  const lowered = relativePath.toLowerCase();
+  return [".md", ".mdx", ".markdown", ".json", ".jsonc", ".ts", ".js", ".mjs", ".cjs", ".txt"].some((ext) =>
+    lowered.endsWith(ext),
+  );
 }
 
 function resolveSafeChildPath(root: string, child: string): string {
@@ -1003,6 +1066,7 @@ function createRoutes(
   config: ServerConfig,
   approvals: ApprovalService,
   tokens: TokenService,
+  env: EnvService,
   onWorkspacesChanged: () => void,
 ): Route[] {
   const routes: Route[] = [];
@@ -1051,6 +1115,53 @@ function createRoutes(
 
   addRoute(routes, "GET", "/w/:id/health", "none", async () => {
     return jsonResponse({ ok: true, version: SERVER_VERSION, uptimeMs: Date.now() - config.startedAt });
+  });
+
+  // Dev log sink: append browser console + error events to a file that an
+  // operator (or an AI driver) can tail. Unauth on purpose because this is
+  // scoped to the dev host and needs to work before clients finish wiring
+  // tokens; it is also a no-op when OPENWORK_DEV_LOG_FILE is unset.
+  addRoute(routes, "POST", "/dev/log", "none", async (ctx) => {
+    const target = resolveDevLogPath();
+    if (!target) {
+      return jsonResponse({ ok: false, reason: "dev_log_disabled" }, 404);
+    }
+    let payload: unknown = null;
+    try {
+      payload = await ctx.request.json();
+    } catch {
+      return jsonResponse({ ok: false, reason: "invalid_json" }, 400);
+    }
+    const entries = Array.isArray(payload) ? payload : [payload];
+    try {
+      await mkdir(dirname(target), { recursive: true });
+      const lines = entries
+        .map((entry) => {
+          try {
+            const stamped = { at: new Date().toISOString(), ...(entry as Record<string, unknown>) };
+            return JSON.stringify(stamped);
+          } catch {
+            return JSON.stringify({ at: new Date().toISOString(), raw: String(entry) });
+          }
+        })
+        .join("\n");
+      await appendFile(target, `${lines}\n`, "utf8");
+    } catch (error) {
+      return jsonResponse({ ok: false, reason: error instanceof Error ? error.message : String(error) }, 500);
+    }
+    return jsonResponse({ ok: true, count: entries.length });
+  });
+
+  addRoute(routes, "GET", "/dev/log", "none", async () => {
+    // Probe response: always 200 so the client's capability probe doesn't
+    // log a noisy "Failed to load resource: 404" in the browser console
+    // when the sink is simply disabled. Clients should key on `ok` + `reason`
+    // in the body, not on HTTP status.
+    const target = resolveDevLogPath();
+    if (!target) {
+      return jsonResponse({ ok: false, reason: "dev_log_disabled" });
+    }
+    return jsonResponse({ ok: true, path: target });
   });
 
   addRoute(routes, "GET", "/ui", "none", async () => {
@@ -1206,6 +1317,87 @@ function createRoutes(
     const ok = await tokens.revoke(ctx.params.id);
     if (!ok) {
       throw new ApiError(404, "token_not_found", "Token not found");
+    }
+    return jsonResponse({ ok: true });
+  });
+
+  function rethrowEnvStoreReadError(error: unknown): never {
+    if (error instanceof EnvStoreReadError) {
+      throw new ApiError(
+        409,
+        error.code,
+        "Environment variable store is invalid. Fix or remove the local env file before editing.",
+      );
+    }
+    throw error;
+  }
+
+  // User-level env vars (see apps/app/pr/environment-variables.md). All routes
+  // require the desktop host token (not owner bearer tokens) because values are
+  // returned raw; the React pane masks them only for display. Reload semantics
+  // are driven from the UI after a write; this surface is user-scoped, not
+  // workspace-scoped, so no audit.
+  addRoute(routes, "GET", "/env", "host-token", async () => {
+    const items = await env.list().catch(rethrowEnvStoreReadError);
+    return jsonResponse({ items });
+  });
+
+  addRoute(routes, "GET", "/env/keys", "host-token", async () => {
+    const items = await env.list().catch(rethrowEnvStoreReadError);
+    return jsonResponse({ keys: items.map((item) => item.key) });
+  });
+
+  addRoute(routes, "PUT", "/env", "host-token", async (ctx) => {
+    ensureWritable(config);
+    const body = await readJsonBody(ctx.request);
+    const rawEntries = Array.isArray(body.entries)
+      ? body.entries
+      : [{ key: body.key, value: body.value }];
+    const entries: Array<{ key: string; value: string }> = [];
+    for (const raw of rawEntries) {
+      if (!raw || typeof raw !== "object") {
+        throw new ApiError(400, "invalid_entry", "Each entry must be an object");
+      }
+      const candidate = raw as { key?: unknown; value?: unknown };
+      const key = typeof candidate.key === "string" ? candidate.key.trim() : "";
+      const value = typeof candidate.value === "string" ? candidate.value : "";
+      if (!isValidEnvKey(key)) {
+        throw new ApiError(400, "invalid_env_key", "Invalid environment variable name");
+      }
+      entries.push({ key, value });
+    }
+    if (entries.length === 0) {
+      throw new ApiError(400, "no_entries", "No entries provided");
+    }
+    try {
+      await env.upsertMany(entries);
+    } catch (error) {
+      if (error instanceof EnvStoreReadError) {
+        rethrowEnvStoreReadError(error);
+      }
+      if (error instanceof InvalidEnvKeyError) {
+        throw new ApiError(
+          400,
+          error.code,
+          error.code === "reserved_env_key"
+            ? "Environment variable name is reserved for OpenWork internals"
+            : "Invalid environment variable name",
+        );
+      }
+      throw error;
+    }
+    return jsonResponse({ ok: true, count: entries.length });
+  });
+
+  addRoute(routes, "DELETE", "/env/:key", "host-token", async (ctx) => {
+    ensureWritable(config);
+    const key = ctx.params.key;
+    if (!isValidEnvKey(key)) {
+      throw new ApiError(400, "invalid_env_key", "Invalid environment variable name");
+    }
+    const removed = await env.delete(key).catch(rethrowEnvStoreReadError);
+    if (!removed) {
+      throw new ApiError(404, "env_not_found", "Environment variable not found");
     }
     return jsonResponse({ ok: true });
   });
@@ -1549,7 +1741,6 @@ function createRoutes(
 
     return jsonResponse({ updatedAt: Date.now() });
   });
-
 
   addRoute(routes, "GET", "/workspace/:id/events", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
@@ -2058,10 +2249,8 @@ function createRoutes(
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const requested = (ctx.url.searchParams.get("path") ?? "").trim();
     const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
-    const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    if (!isSupportedWorkspaceTextFilePath(relativePath)) {
+      throw new ApiError(400, "invalid_path", "Only Markdown and OpenCode plugin text files are supported");
     }
 
     const absPath = resolveSafeChildPath(workspace.path, relativePath);
@@ -2090,10 +2279,8 @@ function createRoutes(
 
     const requestedPath = String(body.path ?? "");
     const relativePath = normalizeWorkspaceRelativePath(requestedPath, { allowSubdirs: true });
-    const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    if (!isSupportedWorkspaceTextFilePath(relativePath)) {
+      throw new ApiError(400, "invalid_path", "Only Markdown and OpenCode plugin text files are supported");
     }
 
     if (typeof body.content !== "string") {
@@ -2472,6 +2659,49 @@ function createRoutes(
     return jsonResponse({ items });
   });
 
+  // Toggle `enabled` on a workspace MCP. Strict body validation — `Boolean(body.enabled)`
+  // would silently disable on `{}` or coerce `"false"` to true.
+  addRoute(routes, "POST", "/workspace/:id/mcp/:name/enabled", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const name = ctx.params.name ?? "";
+    const body = await readJsonBody(ctx.request);
+    if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
+      throw new ApiError(400, "invalid_payload", "enabled must be a boolean");
+    }
+    const enabled = body.enabled;
+    const action = enabled ? "mcp.enable" : "mcp.disable";
+    const summary = `${enabled ? "Enable" : "Disable"} MCP ${name}`;
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action,
+      summary,
+      paths: [opencodeConfigPath(workspace.path)],
+    });
+    const updated = await setMcpEnabled(workspace.path, name, enabled);
+    if (!updated) {
+      throw new ApiError(404, "mcp_not_found", `MCP ${name} not found in workspace config`);
+    }
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action,
+      target: "opencode.json",
+      summary: `${enabled ? "Enabled" : "Disabled"} MCP ${name}`,
+      timestamp: Date.now(),
+    });
+    // ReloadTrigger.action only allows added/removed/updated, so toggle => "updated".
+    emitReloadEvent(ctx.reloadEvents, workspace, "mcp", {
+      type: "mcp",
+      name,
+      action: "updated",
+    });
+    const items = await listMcp(workspace.path);
+    return jsonResponse({ items });
+  });
+
   addRoute(routes, "DELETE", "/workspace/:id/mcp/:name/auth", "client", async (ctx) => {
     ensureWritable(config);
     requireClientScope(ctx, "collaborator");
@@ -2605,37 +2835,6 @@ function createRoutes(
       path: join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`),
     });
     return jsonResponse({ ok: true });
-  });
-
-  addRoute(routes, "GET", "/workspace/:id/scheduler/jobs", "client", async (ctx) => {
-    const workspace = await resolveWorkspace(config, ctx.params.id);
-    const items = await listScheduledJobs(workspace.path);
-    return jsonResponse({ items });
-  });
-
-  addRoute(routes, "DELETE", "/workspace/:id/scheduler/jobs/:name", "client", async (ctx) => {
-    ensureWritable(config);
-    requireClientScope(ctx, "collaborator");
-    const workspace = await resolveWorkspace(config, ctx.params.id);
-    const name = ctx.params.name ?? "";
-    const { job, jobFile, systemPaths } = await resolveScheduledJob(name, workspace.path);
-    await requireApproval(ctx, {
-      workspaceId: workspace.id,
-      action: "scheduler.delete",
-      summary: `Delete scheduled job ${job.name}`,
-      paths: [jobFile, ...systemPaths],
-    });
-    await deleteScheduledJob(job, jobFile);
-    await recordAudit(workspace.path, {
-      id: shortId(),
-      workspaceId: workspace.id,
-      actor: ctx.actor ?? { type: "remote" },
-      action: "scheduler.delete",
-      target: jobFile,
-      summary: `Deleted scheduled job ${job.name}`,
-      timestamp: Date.now(),
-    });
-    return jsonResponse({ job });
   });
 
   addRoute(routes, "GET", "/workspace/:id/export", "client", async (ctx) => {
@@ -2915,12 +3114,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
-function parseInteger(value: string | undefined): number | null {
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function parseOptionalPositiveInteger(value: string | null, name: string): number | undefined {
   if (value === null) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -2945,13 +3138,6 @@ function parseOptionalBoolean(value: string | null, name: string): boolean | und
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   throw new ApiError(400, "invalid_query", `${name} must be a boolean`);
-}
-
-function expandHome(value: string): string {
-  if (value.startsWith("~/")) {
-    return join(homedir(), value.slice(2));
-  }
-  return value;
 }
 
 function parseJsonResponse(text: string): unknown {

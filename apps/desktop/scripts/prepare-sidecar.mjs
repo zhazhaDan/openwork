@@ -32,7 +32,6 @@ const hasFlag = (name) => process.argv.slice(2).includes(name);
 const forceBuild = hasFlag("--force") || process.env.OPENWORK_SIDECAR_FORCE_BUILD === "1";
 const sidecarOverride = process.env.OPENWORK_SIDECAR_DIR?.trim() || readArg("--outdir");
 const sidecarDir = sidecarOverride ? resolve(sidecarOverride) : join(__dirname, "..", "src-tauri", "sidecars");
-const packageJsonPath = resolve(__dirname, "..", "package.json");
 const constantsPath = resolve(__dirname, "..", "..", "..", "constants.json");
 
 const normalizeVersion = (value) => {
@@ -77,6 +76,7 @@ const resolvedTargetTriple = (() => {
   }
   return null;
 })();
+const isWindowsTarget = process.platform === "win32" || resolvedTargetTriple?.includes("windows") === true;
 
 const bunTarget = (() => {
   switch (resolvedTargetTriple) {
@@ -92,14 +92,17 @@ const bunTarget = (() => {
     // with Bun 1.3.6. Use the stable x64 target here for now.
     case "x86_64-pc-windows-msvc":
       return "bun-windows-x64";
+    case "aarch64-pc-windows-msvc":
+      return "bun-windows-arm64";
     default:
       return null;
   }
 })();
 
+
 // openwork-server paths
 const openworkServerBaseName = "openwork-server";
-const openworkServerName = process.platform === "win32" ? `${openworkServerBaseName}.exe` : openworkServerBaseName;
+const openworkServerName = isWindowsTarget ? `${openworkServerBaseName}.exe` : openworkServerBaseName;
 const openworkServerPath = join(sidecarDir, openworkServerName);
 const openworkServerBuildName = bunTarget
   ? `${openworkServerBaseName}-${bunTarget}${bunTarget.includes("windows") ? ".exe" : ""}`
@@ -123,7 +126,7 @@ const resolveBuildScript = (dir) => {
 
 // opencode-router paths
 const opencodeRouterBaseName = "opencode-router";
-const opencodeRouterName = process.platform === "win32" ? `${opencodeRouterBaseName}.exe` : opencodeRouterBaseName;
+const opencodeRouterName = isWindowsTarget ? `${opencodeRouterBaseName}.exe` : opencodeRouterBaseName;
 const opencodeRouterPath = join(sidecarDir, opencodeRouterName);
 const opencodeRouterBuildName = bunTarget
   ? `${opencodeRouterBaseName}-${bunTarget}${bunTarget.includes("windows") ? ".exe" : ""}`
@@ -139,7 +142,7 @@ const opencodeRouterDir = resolve(__dirname, "..", "..", "opencode-router");
 // orchestrator paths
 const orchestratorBaseName = "openwork-orchestrator";
 const orchestratorName =
-  process.platform === "win32" ? `${orchestratorBaseName}.exe` : orchestratorBaseName;
+  isWindowsTarget ? `${orchestratorBaseName}.exe` : orchestratorBaseName;
 const orchestratorPath = join(sidecarDir, orchestratorName);
 const orchestratorBuildName = bunTarget
   ? `${orchestratorBaseName}-${bunTarget}${bunTarget.includes("windows") ? ".exe" : ""}`
@@ -154,7 +157,7 @@ const orchestratorDir = resolve(__dirname, "..", "..", "orchestrator");
 
 // chrome-devtools-mcp shim sidecar
 const chromeDevtoolsBaseName = "chrome-devtools-mcp";
-const chromeDevtoolsName = process.platform === "win32" ? `${chromeDevtoolsBaseName}.exe` : chromeDevtoolsBaseName;
+const chromeDevtoolsName = isWindowsTarget ? `${chromeDevtoolsBaseName}.exe` : chromeDevtoolsBaseName;
 const chromeDevtoolsPath = join(sidecarDir, chromeDevtoolsName);
 const chromeDevtoolsBuildName = bunTarget
   ? `${chromeDevtoolsBaseName}-${bunTarget}${bunTarget.includes("windows") ? ".exe" : ""}`
@@ -237,6 +240,37 @@ const sha256File = (filePath) => {
   return hash.digest("hex");
 };
 
+const adHocSignDarwin = (filePath) => {
+  if (process.platform !== "darwin" || !filePath || !existsSync(filePath)) return;
+  const remove = spawnSync("codesign", ["--remove-signature", filePath], {
+    encoding: "utf8",
+  });
+  if (remove.error && remove.error.code === "ENOENT") {
+    throw new Error("codesign is required to prepare runnable macOS sidecars");
+  }
+
+  const sign = spawnSync("codesign", ["--force", "--sign", "-", filePath], {
+    encoding: "utf8",
+  });
+  if (sign.error) {
+    if (sign.error.code === "ENOENT") {
+      throw new Error("codesign is required to prepare runnable macOS sidecars");
+    }
+    throw sign.error;
+  }
+  if (sign.status !== 0) {
+    const stderr = sign.stderr?.trim();
+    throw new Error(`Failed to codesign ${filePath}${stderr ? `: ${stderr}` : ""}`);
+  }
+};
+
+const adHocSignDarwinSidecars = (paths) => {
+  if (process.platform !== "darwin") return;
+  for (const filePath of [...new Set(paths.filter(Boolean))]) {
+    adHocSignDarwin(filePath);
+  }
+};
+
 const parseChecksum = (content, assetName) => {
   const lines = content.split(/\r?\n/);
   for (const line of lines) {
@@ -317,6 +351,7 @@ if (existsSync(openworkServerBuildPath)) {
 
 // opencode sidecar 下载已移除 — 由 tron-ai npm 包替代
 
+// Build opencode-router sidecar
 const opencodeRouterPkgRaw = readFileSync(resolve(opencodeRouterDir, "package.json"), "utf8");
 const opencodeRouterPkg = JSON.parse(opencodeRouterPkgRaw);
 const opencodeRouterPkgVersion = String(opencodeRouterPkg.version ?? "").trim();
@@ -535,6 +570,21 @@ if (existsSync(chromeDevtoolsBuildPath)) {
   }
 }
 
+adHocSignDarwinSidecars([
+  openworkServerBuildPath,
+  openworkServerPath,
+  openworkServerTargetPath,
+  opencodeRouterBuildPath,
+  opencodeRouterPath,
+  opencodeRouterTargetPath,
+  orchestratorBuildPath,
+  orchestratorPath,
+  orchestratorTargetPath,
+  chromeDevtoolsBuildPath,
+  chromeDevtoolsPath,
+  chromeDevtoolsTargetPath,
+]);
+
 const openworkServerVersion = (() => {
   try {
     const raw = readFileSync(resolve(openworkServerDir, "package.json"), "utf8");
@@ -587,7 +637,7 @@ try {
   const content = JSON.stringify(versions, null, 2) + "\n";
   writeFileSync(versionsPath, content, "utf8");
   if (resolvedTargetTriple) {
-    const targetSuffix = process.platform === "win32" ? ".exe" : "";
+    const targetSuffix = isWindowsTarget ? ".exe" : "";
     const targetVersionsPath = join(sidecarDir, `versions.json-${resolvedTargetTriple}${targetSuffix}`);
     writeFileSync(targetVersionsPath, content, "utf8");
   }

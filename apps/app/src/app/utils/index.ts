@@ -10,7 +10,7 @@ import type {
   PlaceholderAssistantMessage,
   ProviderListItem,
 } from "../types";
-import type { WorkspaceInfo } from "../lib/tauri";
+import type { WorkspaceInfo } from "../lib/desktop";
 
 export function formatModelRef(model: ModelRef) {
   return `${model.providerID}/${model.modelID}`;
@@ -73,14 +73,12 @@ export function isTauriRuntime() {
   return typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__ != null;
 }
 
-/**
- * 检测是否在桌面运行时环境（Tauri 或 Electron）
- * 用于纯 UI 显示开关（如启用本地工作区、显示引擎状态等）
- * 不可用于 Tauri IPC 调用（invoke 等），那些必须用 isTauriRuntime()
- */
+export function isElectronRuntime() {
+  return typeof window !== "undefined" && (window as Window).__OPENWORK_ELECTRON__ != null;
+}
+
 export function isDesktopRuntime() {
-  return typeof window !== "undefined" &&
-    ((window as any).__TAURI_INTERNALS__ != null || (window as any).__ELECTRON__ === true);
+  return isTauriRuntime() || isElectronRuntime();
 }
 
 export function isWindowsPlatform() {

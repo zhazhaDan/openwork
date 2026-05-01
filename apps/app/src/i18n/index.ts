@@ -1,4 +1,3 @@
-import { createSignal, createRoot } from "solid-js";
 import en from "./locales/en";
 import ja from "./locales/ja";
 import zh from "./locales/zh";
@@ -59,15 +58,15 @@ export const isLanguage = (value: unknown): value is Language => {
   return typeof value === "string" && LANGUAGES.includes(value as Language);
 };
 
-/**
- * Create root-level locale signal with persistence
- */
-const [locale, setLocaleSignal] = createRoot(() => createSignal<Language>("zh"));
+let localeValue: Language = "en";
 
 /**
  * Get current locale
  */
 export const currentLocale = (): Language => locale();
+function locale(): Language {
+  return localeValue;
+}
 
 /**
  * Set locale and persist to localStorage
@@ -78,7 +77,7 @@ export const setLocale = (newLocale: Language) => {
     newLocale = "en";
   }
 
-  setLocaleSignal(newLocale);
+  localeValue = newLocale;
 
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("lang", newLocale);
@@ -133,13 +132,13 @@ export const t = (key: string, localeOverride?: Language, params?: Record<string
  */
 export const initLocale = (): Language => {
   if (typeof window === "undefined") {
-    return "zh";
+    return "en";
   }
 
   try {
     const stored = window.localStorage.getItem(LANGUAGE_PREF_KEY);
     if (isLanguage(stored)) {
-      setLocaleSignal(stored);
+      localeValue = stored;
       if (typeof document !== "undefined") {
         document.documentElement.setAttribute("lang", stored);
       }
@@ -149,10 +148,9 @@ export const initLocale = (): Language => {
     console.warn("Failed to read language preference:", e);
   }
 
-  setLocaleSignal("zh");
   if (typeof document !== "undefined") {
-    document.documentElement.setAttribute("lang", "zh");
+    document.documentElement.setAttribute("lang", "en");
   }
 
-  return "zh";
+  return "en";
 };
