@@ -153,8 +153,11 @@ export const desktopFetch: typeof globalThis.fetch = (input, init) => {
 
 export async function openDesktopUrl(url: string): Promise<void> {
   if (isElectronDesktopRuntime()) {
-    await window.__OPENWORK_ELECTRON__?.shell?.openExternal?.(url);
-    return;
+    const openExternal = window.__OPENWORK_ELECTRON__?.shell?.openExternal;
+    if (openExternal) {
+      await openExternal(url);
+      return;
+    }
   }
   if (isTauriDesktopRuntime()) {
     await tauriBridge.openDesktopUrl(url);

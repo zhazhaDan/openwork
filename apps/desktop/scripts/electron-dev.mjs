@@ -7,6 +7,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
 const electronSidecarDir = resolve(desktopRoot, "resources", "sidecars");
+const defaultDevDataDir = resolve(
+  process.env.HOME ?? process.env.USERPROFILE ?? repoRoot,
+  ".openwork",
+  "openwork-orchestrator-dev",
+);
 
 const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const nodeCmd = process.execPath;
@@ -24,7 +29,7 @@ const viteProbeUrls = explicitStartUrl
 
 function run(command, args, options = {}) {
   return spawn(command, args, {
-    stdio: "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
     shell: process.platform === "win32",
     ...options,
   });
@@ -213,7 +218,8 @@ if (!viteReady) {
     env: {
       ...process.env,
       PORT: String(devPort),
-      // OPENWORK_DEV_MODE: process.env.OPENWORK_DEV_MODE ?? "1",
+      OPENWORK_DEV_MODE: process.env.OPENWORK_DEV_MODE ?? "1",
+      OPENWORK_DATA_DIR: process.env.OPENWORK_DATA_DIR ?? defaultDevDataDir,
     },
   });
 }
@@ -233,6 +239,7 @@ electronChild = run(pnpmCmd, ["exec", "electron", "./electron/main.mjs"], {
   env: {
     ...process.env,
     OPENWORK_DEV_MODE: process.env.OPENWORK_DEV_MODE ?? "1",
+    OPENWORK_DATA_DIR: process.env.OPENWORK_DATA_DIR ?? defaultDevDataDir,
     OPENWORK_ELECTRON_START_URL: resolvedStartUrl,
     ...(cdpPort ? { OPENWORK_ELECTRON_REMOTE_DEBUG_PORT: cdpPort } : {}),
   },

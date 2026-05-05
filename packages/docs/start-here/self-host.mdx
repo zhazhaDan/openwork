@@ -7,42 +7,11 @@ Most users just use the [desktop app](https://openworklabs.com/download). Self-h
 
 Want hosted workspaces, team skill hubs, or shared providers without running infra? Use [OpenWork Cloud](/cloud/get-started) instead. Rolling this out across a company? [Book a call](https://calendar.app.google/86QpCENvhfEzDFLu5) about [Enterprise](/cloud/enterprise).
 
-## The simple path
-
-Run one OpenWork worker on a server you control.
-
-```bash
-npm install -g openwork-orchestrator
-openwork start --workspace /path/to/your/workspace --approval auto
-```
-
-<Frame>
-  ![OpenWork CLI terminal output showing URL and owner token](/images/get-started-cli-output.png)
-</Frame>
-
-Copy:
-
-- `OpenWork URL`
-- `OpenWork Owner Token`
-
-Then open the OpenWork desktop app on your local machine:
-
-1. Click `+ Add workspace`.
-2. Click `+ Connect Remote workspace`.
-3. Paste the `OpenWork URL` and `OpenWork Owner Token`.
-
-<Frame>
-  ![Add Remote Workspace dialog in OpenWork desktop app](/images/get-started-add-remote-workspace.png)
-</Frame>
-
-This keeps your code, data, models, and credentials on your server while your local machine stays light.
-
 ## What you deploy
 
 OpenWork is split into normal services:
 
 - **OpenWork app**: the desktop or web client people use.
-- **OpenWork server / worker runtime**: the API surface the app connects to, with opencode running behind it.
 - **Den web**: the web app for sign-in, worker launch, and connect links if you want a cloud-style setup.
 - **Den controller**: the control plane for auth, workers, and provisioning.
 - **Worker proxy**: optional layer for provider-backed workers and signed runtime URLs.
@@ -78,14 +47,30 @@ SSO (SAML/OIDC) is in the current rollout and is designed to run against your ow
 
 If you do not deploy Den, worker access is token-based with `OPENWORK_TOKEN` and `OPENWORK_HOST_TOKEN`.
 
+## Minimal Working Stack
+
+#### OpenWork Cloud and the Desktop App
+
+OpenWork cloud is composed of two services:
+
+- NextJS frontend
+- NodeJS backend (Hono) with MySQL DB
+- Electron/React desktop app
+
+These three alone cover most feature but do not include:
+
+- Remote code execution through sandboxes
+- Analytic
+- Telemetry (upcoming) via open telemetry
+- Email management: inviting users, etc.
+
 ## Optional vendors
 
 OpenWork does not require many third-party services for the core runtime. These are optional or deployment-specific:
 
-- Render: our current hosted service and worker deployment path.
+- We use Render: our current hosted service and worker deployment path.
 - Daytona: optional sandbox provider for cloud workers.
 - Vercel: optional Den web/share hosting and worker DNS automation.
-- Vercel Blob: optional storage for public share bundles.
 - PostHog: optional analytics for public web surfaces. You can point it at self-hosted PostHog with `NEXT_PUBLIC_POSTHOG_HOST`, or remove/clear the key in your self-hosted web build if you do not want analytics.
 - Polar: optional billing/paywall for hosted cloud workers.
 - Loops: optional user sync and lifecycle messaging.
@@ -99,7 +84,7 @@ Cloud also gives you org-wide primitives you'd otherwise have to build: [team sk
 
 ## Looking for support for a larger rollout?
 
-If you're rolling OpenWork out across a company of 150+ employees, the orchestrator on a single VM might be harder to manage.
+If you're rolling OpenWork out across a company of 150\+ employees, the orchestrator on a single VM might be harder to manage.
 
 At that scale our customers typically want:
 

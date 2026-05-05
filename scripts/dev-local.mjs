@@ -13,6 +13,7 @@ const composeProject = "openwork-den-local"
 const apiPort = process.env.DEN_API_PORT?.trim() || process.env.DEN_CONTROLLER_PORT?.trim() || "8788"
 const workerProxyPort = process.env.DEN_WORKER_PROXY_PORT?.trim() || "8789"
 const webPort = process.env.DEN_WEB_PORT?.trim() || "3005"
+const appPort = process.env.OPENWORK_APP_PORT?.trim() || process.env.PORT?.trim() || "5173"
 const databaseUrl = process.env.DATABASE_URL?.trim() || "mysql://root:password@127.0.0.1:3306/openwork_den"
 const dbEncryptionKey =
   process.env.DEN_DB_ENCRYPTION_KEY?.trim() ||
@@ -23,6 +24,8 @@ function detectWebOrigins() {
     `http://localhost:${webPort}`,
     `http://127.0.0.1:${webPort}`,
     `http://0.0.0.0:${webPort}`,
+    `http://localhost:${appPort}`,
+    `http://127.0.0.1:${appPort}`,
   ])
 
   for (const entries of Object.values(os.networkInterfaces())) {
