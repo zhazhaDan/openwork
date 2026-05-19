@@ -3091,7 +3091,7 @@ async function readWorkspaceSessionSnapshot(
   input: { limit?: number },
 ) {
   try {
-    const [session, messages, todos, statuses] = await Promise.all([
+    const [session, messages, todos, statuses, allQuestions] = await Promise.all([
       fetchOpencodeJson(config, workspace, `/session/${encodeURIComponent(sessionId)}`, {
         method: "GET",
       }),
@@ -3105,8 +3105,14 @@ async function readWorkspaceSessionSnapshot(
       fetchOpencodeJson(config, workspace, "/session/status", {
         method: "GET",
       }),
+      fetchOpencodeJson(config, workspace, "/question", {
+        method: "GET",
+      }).catch(() => []),
     ]);
-    return buildSessionSnapshot({ session, messages, todos, statuses });
+    // 从全局 question 列表中筛出当前 session 的问题
+    const questions = Array.isArray(allQuestions) ? allQuestions : [];
+    const question = questions.find((q: any) => q.sessionID === sessionId) ?? null;
+    return buildSessionSnapshot({ session, messages, todos, statuses, question });
   } catch (error) {
     remapSessionReadError(error);
   }
