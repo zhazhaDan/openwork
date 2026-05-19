@@ -1,178 +1,286 @@
 "use client";
 
-import Link from "next/link";
+import { useEffect, useState } from "react";
 import {
-  Bot,
-  CreditCard,
-  Cpu,
-  KeyRound,
+  ChevronRight,
+  Download,
+  Gauge,
   Monitor,
   Users,
 } from "lucide-react";
-import {
-  getBackgroundAgentsRoute,
-  getApiKeysRoute,
-  getBillingRoute,
-  getCustomLlmProvidersRoute,
-  getOrgAccessFlags,
-  getMembersRoute,
-} from "../../../../_lib/den-org";
+import { useQuery } from "@tanstack/react-query";
+import { requestJson } from "../../../../_lib/den-flow";
 import { useDenFlow } from "../../../../_providers/den-flow-provider";
 import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 
-function getGreeting(name: string | null | undefined) {
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const firstName = name?.trim().split(/\s+/)[0] ?? "there";
-  return `${greeting}, ${firstName}`;
+/* ── Types ── */
+
+type AdoptionData = {
+  members: number;
+  pendingInvites: number;
+  activeUsers7d: number;
+  activeUsers30d: number;
+  weeklyTrend: number[];
+};
+
+type ReleaseAsset = {
+  name?: string;
+  browser_download_url?: string;
+};
+
+type Release = {
+  draft?: boolean;
+  prerelease?: boolean;
+  html_url?: string;
+  tag_name?: string;
+  assets?: ReleaseAsset[];
+};
+
+type Installers = {
+  macos: { appleSilicon: string; intel: string };
+  windows: { x64: string };
+  linux: { appImageX64: string; appImageArm64: string };
+};
+
+/* ── Data ── */
+
+async function fetchAdoption(): Promise<AdoptionData | null> {
+  try {
+    const { response, payload } = await requestJson("/v1/telemetry/adoption", { method: "GET" }, 12000);
+    if (!response.ok || !payload || typeof payload !== "object") return null;
+    const p = payload as Record<string, unknown>;
+    return {
+      members: typeof p.members === "number" ? p.members : 0,
+      pendingInvites: typeof p.pendingInvites === "number" ? p.pendingInvites : 0,
+      activeUsers7d: typeof p.activeMembers7d === "number" ? p.activeMembers7d : (typeof p.activeUsers7d === "number" ? p.activeUsers7d : 0),
+      activeUsers30d: typeof p.activeMembers30d === "number" ? p.activeMembers30d : (typeof p.activeUsers30d === "number" ? p.activeUsers30d : 0),
+      weeklyTrend: Array.isArray(p.weeklyTrend) ? p.weeklyTrend.map(Number) : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
-export function DashboardOverviewScreen() {
-  const { orgSlug, activeOrg, orgContext } = useOrgDashboard();
-  const { user } = useDenFlow();
-  const access = getOrgAccessFlags(
-    orgContext?.currentMember.role ?? "member",
-    orgContext?.currentMember.isOwner ?? false,
-  );
+const FALLBACK_RELEASE = "https://github.com/different-ai/openwork/releases";
 
-  const quickActions = [
-    {
-      label: "Members",
-      icon: Users,
-      href: getMembersRoute(orgSlug),
-      tint: "bg-cyan-50 text-cyan-600 group-hover:bg-cyan-100",
-    },
-    ...(access.canManageApiKeys
-      ? [{
-          label: "API Keys",
-          icon: KeyRound,
-          href: getApiKeysRoute(orgSlug),
-          tint: "bg-emerald-50 text-emerald-600 group-hover:bg-emerald-100",
-        }]
-      : []),
-    {
-      label: "Shared Workspace",
-      icon: Bot,
-      href: getBackgroundAgentsRoute(orgSlug),
-      tint: "bg-orange-50 text-orange-500 group-hover:bg-orange-100",
-    },
-    {
-      label: "LLM Providers",
-      icon: Cpu,
-      href: getCustomLlmProvidersRoute(orgSlug),
-      tint: "bg-lime-50 text-lime-600 group-hover:bg-lime-100",
-    },
-    {
-      label: "Billing",
-      icon: CreditCard,
-      href: getBillingRoute(orgSlug),
-      tint: "bg-gray-100 text-gray-600 group-hover:bg-gray-200",
-    },
-    {
-      label: "Desktop app",
-      icon: Monitor,
-      href: "https://openworklabs.com/download",
-      external: true,
-      tint: "bg-fuchsia-50 text-fuchsia-600 group-hover:bg-fuchsia-100",
-    },
-  ];
+function selectAsset(assets: ReleaseAsset[], extensions: string[], keywords: string[] = []): ReleaseAsset | null {
+  const matches = assets.filter((asset) => {
+    if (!asset?.name || !asset?.browser_download_url) return false;
+    const name = asset.name.toLowerCase();
+    const extOk = extensions.some((ext) => name.endsWith(ext));
+    const kwOk = keywords.length === 0 || keywords.some((kw) => name.includes(kw));
+    return extOk && kwOk;
+  });
+  if (matches.length === 0) return null;
+  return (
+    matches.find((a) => a.name?.toLowerCase().includes("adhoc")) ||
+    matches.find((a) => a.name?.toLowerCase().includes("universal")) ||
+    matches.find((a) => a.name?.toLowerCase().includes("aarch64")) ||
+    matches.find((a) => a.name?.toLowerCase().includes("arm64")) ||
+    matches[0]
+  );
+}
+
+async function fetchInstallers(): Promise<{ installers: Installers; releaseTag: string; releaseUrl: string }> {
+  const fallback: Installers = {
+    macos: { appleSilicon: FALLBACK_RELEASE, intel: FALLBACK_RELEASE },
+    windows: { x64: FALLBACK_RELEASE },
+    linux: { appImageX64: FALLBACK_RELEASE, appImageArm64: FALLBACK_RELEASE },
+  };
+  try {
+    const res = await fetch("https://api.github.com/repos/different-ai/openwork/releases/latest", {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) return { installers: fallback, releaseTag: "", releaseUrl: FALLBACK_RELEASE };
+    const release = (await res.json()) as Release;
+    const assets = Array.isArray(release?.assets) ? release.assets : [];
+    const releaseUrl = release?.html_url || FALLBACK_RELEASE;
+    const releaseTag = release?.tag_name || "";
+
+    const macApple = selectAsset(assets, [".dmg"], ["mac-arm64"]);
+    const macIntel = selectAsset(assets, [".dmg"], ["mac-x64"]);
+    const dmg = selectAsset(assets, [".dmg"], ["openwork-mac-"]);
+    const winX64 = selectAsset(assets, [".exe"], ["win-x64"]);
+    const linuxAppX64 = selectAsset(assets, [".appimage"], ["linux-x86_64"]) || selectAsset(assets, [".appimage"], ["linux-x64"]);
+    const linuxAppArm64 = selectAsset(assets, [".appimage"], ["linux-arm64"]);
+
+    return {
+      installers: {
+        macos: {
+          appleSilicon: macApple?.browser_download_url || dmg?.browser_download_url || releaseUrl,
+          intel: macIntel?.browser_download_url || dmg?.browser_download_url || releaseUrl,
+        },
+        windows: { x64: winX64?.browser_download_url || releaseUrl },
+        linux: {
+          appImageX64: linuxAppX64?.browser_download_url || releaseUrl,
+          appImageArm64: linuxAppArm64?.browser_download_url || releaseUrl,
+        },
+      },
+      releaseTag,
+      releaseUrl,
+    };
+  } catch {
+    return { installers: fallback, releaseTag: "", releaseUrl: FALLBACK_RELEASE };
+  }
+}
+
+/* ── Helpers ── */
+
+function getGreeting(name: string | null | undefined) {
+  const hour = new Date().getHours();
+  const g = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  return `${g}, ${name?.trim().split(/\s+/)[0] ?? "there"}`;
+}
+
+function detectOS(): "macos" | "windows" | "linux" {
+  if (typeof navigator === "undefined") return "macos";
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("win")) return "windows";
+  if (ua.includes("linux")) return "linux";
+  return "macos";
+}
+
+function toneBg(tone: "violet" | "green" | "blue") {
+  switch (tone) {
+    case "violet": return "bg-[#EDE4FF]";
+    case "green": return "bg-[#E3F3E3]";
+    case "blue": return "bg-[#E4ECFB]";
+  }
+}
+
+/* ── Small components ── */
+
+function StatCard({ icon, title, value, sub, tone }: {
+  icon: React.ReactNode; title: string; value: string; sub?: string; tone: "violet" | "green" | "blue";
+}) {
+  return (
+    <div className="rounded-[16px] border border-[#e3e7ee] bg-white/90 px-4 py-3.5">
+      <div className="flex items-center gap-3">
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] ${toneBg(tone)}`}>{icon}</div>
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium tracking-[-0.01em] text-[#30405F]">{title}</div>
+          <div className="mt-0.5 text-[20px] font-semibold tracking-[-0.03em] text-[#07192C]">{value}</div>
+          {sub ? <div className="mt-0.5 truncate text-[12px] text-[#637291]">{sub}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DownloadLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-[12px] font-medium text-white transition-colors hover:bg-white/10"
+    >
+      <Download className="h-3 w-3 shrink-0" />
+      {children}
+    </a>
+  );
+}
+
+/* ── Main screen ── */
+
+export function DashboardOverviewScreen() {
+  const { activeOrg, orgContext } = useOrgDashboard();
+  const { user } = useDenFlow();
+  const [os, setOs] = useState<"macos" | "windows" | "linux" | null>(null);
+
+  useEffect(() => { setOs(detectOS()); }, []);
+
+  const { data: adoption } = useQuery({
+    queryKey: ["telemetry", "adoption"],
+    queryFn: fetchAdoption,
+  });
+
+  const { data: releaseData } = useQuery({
+    queryKey: ["github", "releases"],
+    queryFn: fetchInstallers,
+    staleTime: 1000 * 60 * 60,
+  });
+
+  const members = adoption?.members ?? orgContext?.members.length ?? 0;
+  const pending = adoption?.pendingInvites ?? (orgContext?.invitations ?? []).filter((i) => i.status === "pending").length;
+  const inst = releaseData?.installers;
 
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-8 md:px-8">
-      <p className="mb-1 text-[12px] text-gray-400">
-        {activeOrg?.name ?? "OpenWork Cloud"}
-      </p>
-      <h1 className="mb-8 text-[26px] tracking-[-0.5px] text-gray-900">
-        {getGreeting(user?.name)}
-      </h1>
+    <div className="mx-auto max-w-[1100px] px-4 pb-8 pt-4 sm:px-6 md:px-8">
 
-      <div className="mb-10 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        {quickActions.map((action) => {
-          const content = (
-            <>
-              <div
-                className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${action.tint}`}
-              >
-                <action.icon className="h-5 w-5" strokeWidth={1.8} />
-              </div>
-              <span className="text-center text-[12px] leading-tight text-gray-700">
-                {action.label}
-              </span>
-            </>
-          );
-
-          const className =
-            "group flex min-h-[116px] flex-col items-center gap-3 rounded-2xl border border-gray-100 bg-white p-5 transition-all hover:border-gray-200 hover:shadow-[0_2px_8px_-4px_rgba(0,0,0,0.08)]";
-
-          if (action.external) {
-            return (
-              <a
-                key={action.label}
-                href={action.href}
-                target="_blank"
-                rel="noreferrer"
-                className={className}
-              >
-                {content}
-              </a>
-            );
-          }
-
-          return (
-            <Link key={action.label} href={action.href} className={className}>
-              {content}
-            </Link>
-          );
-        })}
+      {/* Breadcrumb */}
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-[#e7e9f0] pb-3">
+        <span className="text-[14px] font-semibold tracking-[-0.01em] text-[#07192C]">{activeOrg?.name ?? "OpenWork Cloud"}</span>
+        <ChevronRight className="h-3.5 w-3.5 text-[#9AA5BA]" />
+        <span className="text-[14px] font-medium tracking-[-0.01em] text-[#5A6886]">Dashboard</span>
       </div>
 
-      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="rounded-2xl border border-gray-100 bg-white p-6">
-          <h2 className="mb-2 text-[15px] tracking-[-0.2px] text-gray-900">
-            Cloud workspace control
-          </h2>
-          <p className="max-w-[620px] text-[13px] leading-[1.7] text-gray-500">
-            Launch shared workspaces, manage access, and connect teammates to hosted OpenWork workers from this dashboard.
+      {/* Greeting */}
+      <h1 className="mt-4 text-[22px] font-semibold tracking-[-0.03em] text-[#07192C]">{getGreeting(user?.name)}</h1>
+      <p className="mt-1 text-[14px] leading-6 text-[#5A6886]">
+        Run locally for free. Keep data on your machine and move to shared workflows when ready.
+      </p>
+
+      {/* Download OpenWork */}
+      <section className="mt-5 overflow-hidden rounded-[18px] border border-[#e3e7ee] bg-[#07192C]">
+        <div className="px-6 py-5">
+          <div className="flex items-center gap-2.5">
+            <Download className="h-5 w-5 text-white/80" />
+            <span className="text-[16px] font-semibold text-white">Download OpenWork</span>
+            {releaseData?.releaseTag ? (
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-white/60">{releaseData.releaseTag}</span>
+            ) : null}
+          </div>
+          <p className="mt-2 max-w-[520px] text-[13px] leading-[1.6] text-white/50">
+            Install the desktop app on macOS, Windows, or Linux. Your workspace connects automatically after sign-in.
           </p>
-          <Link
-            href={getBackgroundAgentsRoute(orgSlug)}
-            className="mt-5 inline-flex rounded-full bg-gray-900 px-4 py-2 text-[12px] font-medium text-white transition-colors hover:bg-gray-800"
-          >
-            Open shared workspaces
-          </Link>
         </div>
 
-        <div className="space-y-4">
-          <div className="overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 p-5">
-            <h3 className="mb-2 text-[14px] text-white">Desktop app</h3>
-            <p className="mb-4 text-[13px] leading-[1.6] text-gray-300">
-              Run locally for free, keep your data on your machine, and move to shared web workflows when your team is ready.
-            </p>
-            <a
-              href="https://openworklabs.com/download"
-              className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2 text-[12px] text-white transition-colors hover:bg-white/10"
-            >
-              <Monitor className="h-3.5 w-3.5" />
-              Use desktop only
-            </a>
+        <div className="grid gap-px bg-white/[0.06] sm:grid-cols-3">
+          {/* macOS */}
+          <div className="bg-[#07192C] px-6 py-4">
+            <div className="flex items-center gap-2">
+              <Monitor className="h-4 w-4 text-white/60" />
+              <span className="text-[13px] font-semibold text-white">macOS</span>
+              {os === "macos" ? <span className="rounded-full bg-[#18A34A]/20 px-1.5 py-px text-[10px] font-medium text-[#4ADE80]">Detected</span> : null}
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              <DownloadLink href={inst?.macos.appleSilicon ?? FALLBACK_RELEASE}>Apple Silicon (M1+)</DownloadLink>
+              <DownloadLink href={inst?.macos.intel ?? FALLBACK_RELEASE}>Intel</DownloadLink>
+            </div>
           </div>
 
-          <div className="rounded-2xl border border-gray-100 bg-white p-5">
-            <h3 className="mb-1 text-[14px] text-gray-900">Workspace snapshot</h3>
-            <div className="mt-4 grid gap-3">
-              <div className="flex items-center justify-between text-[13px] text-gray-500">
-                <span>Members</span>
-                <span className="font-medium text-gray-900">{orgContext?.members.length ?? 0}</span>
-              </div>
-              <div className="flex items-center justify-between text-[13px] text-gray-500">
-                <span>Pending invites</span>
-                <span className="font-medium text-gray-900">
-                  {(orgContext?.invitations ?? []).filter((invitation) => invitation.status === "pending").length}
-                </span>
-              </div>
+          {/* Windows */}
+          <div className="bg-[#07192C] px-6 py-4">
+            <div className="flex items-center gap-2">
+              <Monitor className="h-4 w-4 text-white/60" />
+              <span className="text-[13px] font-semibold text-white">Windows</span>
+              {os === "windows" ? <span className="rounded-full bg-[#18A34A]/20 px-1.5 py-px text-[10px] font-medium text-[#4ADE80]">Detected</span> : null}
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              <DownloadLink href={inst?.windows.x64 ?? FALLBACK_RELEASE}>x64 Installer</DownloadLink>
+            </div>
+          </div>
+
+          {/* Linux */}
+          <div className="bg-[#07192C] px-6 py-4">
+            <div className="flex items-center gap-2">
+              <Monitor className="h-4 w-4 text-white/60" />
+              <span className="text-[13px] font-semibold text-white">Linux</span>
+              {os === "linux" ? <span className="rounded-full bg-[#18A34A]/20 px-1.5 py-px text-[10px] font-medium text-[#4ADE80]">Detected</span> : null}
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              <DownloadLink href={inst?.linux.appImageX64 ?? FALLBACK_RELEASE}>AppImage (x64)</DownloadLink>
+              <DownloadLink href={inst?.linux.appImageArm64 ?? FALLBACK_RELEASE}>AppImage (ARM64)</DownloadLink>
             </div>
           </div>
         </div>
+      </section>
+
+      {/* Live org data */}
+      <div className="mt-5 grid gap-3.5 md:grid-cols-2">
+        <StatCard icon={<Users className="h-5 w-5 text-[#6F3DFF]" />} title="OpenWork users" value={`${members}`} sub="Current workspace members" tone="violet" />
+        <StatCard icon={<Gauge className="h-5 w-5 text-[#1D63FF]" />} title="Pending invites" value={`${pending}`} sub="Awaiting activation" tone="blue" />
       </div>
     </div>
   );

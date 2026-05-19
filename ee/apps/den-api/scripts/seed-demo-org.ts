@@ -19,6 +19,7 @@ import {
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
 import { auth } from "../src/auth.js"
 import { db } from "../src/db.js"
+import { ensureDefaultDesktopPolicyForOrganization } from "../src/desktop-policies.js"
 import { env } from "../src/env.js"
 import { seedDefaultOrganizationRoles } from "../src/orgs.js"
 
@@ -341,7 +342,11 @@ async function ensureOrganization(ownerUserId: UserId): Promise<OrganizationId> 
       })
       .where(eq(OrganizationTable.id, existing[0].id))
     await seedDefaultOrganizationRoles(existing[0].id)
-    await ensureMember(existing[0].id, ownerUserId, "owner")
+    const ownerMemberId = await ensureMember(existing[0].id, ownerUserId, "owner")
+    await ensureDefaultDesktopPolicyForOrganization({
+      organizationId: existing[0].id,
+      createdByOrgMemberId: ownerMemberId,
+    })
     return existing[0].id
   }
 
@@ -355,7 +360,11 @@ async function ensureOrganization(ownerUserId: UserId): Promise<OrganizationId> 
     slug: DEMO_ORG_SLUG,
   })
   await seedDefaultOrganizationRoles(id)
-  await ensureMember(id, ownerUserId, "owner")
+  const ownerMemberId = await ensureMember(id, ownerUserId, "owner")
+  await ensureDefaultDesktopPolicyForOrganization({
+    organizationId: id,
+    createdByOrgMemberId: ownerMemberId,
+  })
   return id
 }
 

@@ -9,11 +9,12 @@ import {
   TeamMemberTable,
   TeamTable,
 } from "@openwork-ee/den-db/schema"
-import { normalizeDesktopAppRestrictions, type DesktopAppRestrictions } from "@openwork/types/den/desktop-app-restrictions"
 import { createDenTypeId, normalizeDenTypeId } from "@openwork-ee/utils/typeid"
 import { db } from "./db.js"
+import { runPostOrganizationMemberChangeHooks } from "./organization-member-hooks.js"
 import { DEFAULT_ORGANIZATION_LIMITS, normalizeOrganizationMetadata, serializeOrganizationMetadata } from "./organization-limits.js"
 import { denDefaultDynamicOrganizationRoles, denOrganizationStaticRoles } from "./organization-access.js"
+import { ensureDefaultDesktopPolicyForOrganization } from "./desktop-policies.js"
 
 type UserId = typeof AuthUserTable.$inferSelect.id
 type SessionId = typeof AuthSessionTable.$inferSelect.id
@@ -62,7 +63,6 @@ export type OrganizationContext = {
     slug: string
     logo: string | null
     allowedEmailDomains: AllowedEmailDomains
-    desktopAppRestrictions: DesktopAppRestrictions
     metadata: string | null
     createdAt: Date
     updatedAt: Date
@@ -458,6 +458,7 @@ export async function acceptInvitationForUser(input: {
   }
 
   const member = await acceptInvitation(invitation, input.userId)
+  await runPostOrganizationMemberChangeHooks({ organizationId: invitation.organizationId, memberId: member.id, change: "added" })
   return {
     invitation,
     member,
@@ -534,11 +535,17 @@ async function createOrganizationRecord(input: {
     metadata,
   })
 
+  const ownerMemberId = createDenTypeId("member")
   await db.insert(MemberTable).values({
-    id: createDenTypeId("member"),
+    id: ownerMemberId,
     organizationId,
     userId: input.userId,
     role: "owner",
+  })
+
+  await ensureDefaultDesktopPolicyForOrganization({
+    organizationId,
+    createdByOrgMemberId: ownerMemberId,
   })
 
   await ensureDefaultDynamicRoles(organizationId)
@@ -610,7 +617,6 @@ export async function updateOrganizationSettings(input: {
   organizationId: OrgId
   name?: string
   allowedEmailDomains?: readonly string[] | null
-  desktopAppRestrictions?: DesktopAppRestrictions
   allowedDesktopVersions?: readonly string[] | null
 }) {
   const nextName = typeof input.name === "string" ? input.name.trim() : null
@@ -624,9 +630,6 @@ export async function updateOrganizationSettings(input: {
   }
   if (input.allowedEmailDomains !== undefined) {
     updates.allowedEmailDomains = normalizeAllowedEmailDomains(input.allowedEmailDomains).domains
-  }
-  if (input.desktopAppRestrictions !== undefined) {
-    updates.desktopAppRestrictions = normalizeDesktopAppRestrictions(input.desktopAppRestrictions)
   }
   if (input.allowedDesktopVersions !== undefined) {
     const rows = await db
@@ -693,7 +696,6 @@ export async function listUserOrgs(userId: UserId) {
         slug: OrganizationTable.slug,
         logo: OrganizationTable.logo,
         allowedEmailDomains: OrganizationTable.allowedEmailDomains,
-        desktopAppRestrictions: OrganizationTable.desktopAppRestrictions,
         metadata: OrganizationTable.metadata,
         createdAt: OrganizationTable.createdAt,
         updatedAt: OrganizationTable.updatedAt,
@@ -706,12 +708,11 @@ export async function listUserOrgs(userId: UserId) {
 
   return memberships.map((row) => ({
     id: row.organization.id,
-      name: row.organization.name,
-      slug: row.organization.slug,
-      logo: row.organization.logo,
-      allowedEmailDomains: normalizeStoredAllowedEmailDomains(row.organization.allowedEmailDomains),
-      desktopAppRestrictions: normalizeDesktopAppRestrictions(row.organization.desktopAppRestrictions),
-      metadata: serializeOrganizationMetadata(row.organization.metadata),
+    name: row.organization.name,
+    slug: row.organization.slug,
+    logo: row.organization.logo,
+    allowedEmailDomains: normalizeStoredAllowedEmailDomains(row.organization.allowedEmailDomains),
+    metadata: serializeOrganizationMetadata(row.organization.metadata),
     role: row.role,
     orgMemberId: row.membershipId,
     membershipId: row.membershipId,
@@ -823,16 +824,15 @@ export async function getOrganizationContextForUser(input: {
   const builtInDynamicRoleNames = new Set(Object.keys(denDefaultDynamicOrganizationRoles))
 
   return {
-      organization: {
-        id: organization.id,
-        name: organization.name,
-        slug: organization.slug,
-        logo: organization.logo,
-        allowedEmailDomains: normalizeStoredAllowedEmailDomains(organization.allowedEmailDomains),
-        desktopAppRestrictions: normalizeDesktopAppRestrictions(organization.desktopAppRestrictions),
-        metadata: serializeOrganizationMetadata(organization.metadata),
-        createdAt: organization.createdAt,
-        updatedAt: organization.updatedAt,
+    organization: {
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      logo: organization.logo,
+      allowedEmailDomains: normalizeStoredAllowedEmailDomains(organization.allowedEmailDomains),
+      metadata: serializeOrganizationMetadata(organization.metadata),
+      createdAt: organization.createdAt,
+      updatedAt: organization.updatedAt,
     },
     currentMember: {
       id: currentMember.id,
@@ -954,6 +954,8 @@ export async function removeOrganizationMember(input: {
 
     await tx.delete(MemberTable).where(eq(MemberTable.id, member.id))
   })
+
+  await runPostOrganizationMemberChangeHooks({ organizationId: input.organizationId, memberId: member.id, change: "removed" })
 
   return member
 }

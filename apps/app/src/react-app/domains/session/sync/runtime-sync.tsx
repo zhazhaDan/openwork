@@ -1,34 +1,30 @@
 /** @jsxImportSource react */
 import { useEffect } from "react";
 
-import { ensureWorkspaceSessionSync, trackWorkspaceSessionSync } from "./session-sync";
+import { ensureWorkspaceSessionSync, trackWorkspaceSessionsSync } from "./session-sync";
 
 type ReactSessionRuntimeProps = {
   workspaceId: string;
   sessionId: string | null;
+  activeSessionIds?: string[];
   opencodeBaseUrl: string;
   openworkToken: string;
 };
 
 export function ReactSessionRuntime(props: ReactSessionRuntimeProps) {
   useEffect(() => {
-    return ensureWorkspaceSessionSync({
+    const input = {
       workspaceId: props.workspaceId,
       baseUrl: props.opencodeBaseUrl,
       openworkToken: props.openworkToken,
-    });
-  }, [props.workspaceId, props.opencodeBaseUrl, props.openworkToken]);
-
-  useEffect(() => {
-    return trackWorkspaceSessionSync(
-      {
-        workspaceId: props.workspaceId,
-        baseUrl: props.opencodeBaseUrl,
-        openworkToken: props.openworkToken,
-      },
-      props.sessionId,
-    );
-  }, [props.workspaceId, props.sessionId, props.opencodeBaseUrl, props.openworkToken]);
+    };
+    const releaseWorkspace = ensureWorkspaceSessionSync(input);
+    const releaseSessions = trackWorkspaceSessionsSync(input, [props.sessionId, ...(props.activeSessionIds ?? [])]);
+    return () => {
+      releaseSessions();
+      releaseWorkspace();
+    };
+  }, [props.workspaceId, props.sessionId, props.activeSessionIds, props.opencodeBaseUrl, props.openworkToken]);
 
   return null;
 }

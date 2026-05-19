@@ -2522,7 +2522,6 @@ async function buildConnectorAutomationContext(input: { connectorInstance: Conne
       organization: {
         allowedEmailDomains: organization.allowedEmailDomains ?? null,
         createdAt: organization.createdAt,
-        desktopAppRestrictions: organization.desktopAppRestrictions,
         id: organization.id,
         logo: organization.logo ?? null,
         metadata: organization.metadata ? JSON.stringify(organization.metadata) : null,

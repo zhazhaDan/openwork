@@ -11,7 +11,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { useDenFlow } from "../../../../_providers/den-flow-provider";
 import { getErrorMessage, getOrgLimitError, requestJson } from "../../../../_lib/den-flow";
 import {
-  type DenDesktopAppRestrictions,
   type DenOrgContext,
   type DenOrgSummary,
   getOrgDashboardRoute,
@@ -31,7 +30,7 @@ type OrgDashboardContextValue = {
   refreshOrgData: () => Promise<void>;
   createOrganization: (name: string) => Promise<void>;
   updateOrganizationName: (name: string) => Promise<void>;
-  updateOrganizationSettings: (input: { name?: string; allowedEmailDomains?: string[] | null; desktopAppRestrictions?: DenDesktopAppRestrictions; allowedDesktopVersions?: string[] | null }) => Promise<void>;
+  updateOrganizationSettings: (input: { name?: string; allowedEmailDomains?: string[] | null; allowedDesktopVersions?: string[] | null }) => Promise<void>;
   switchOrganization: (slug: string) => void;
   inviteMember: (input: { email: string; role: string }) => Promise<void>;
   cancelInvitation: (invitationId: string) => Promise<void>;
@@ -188,10 +187,6 @@ export function OrgDashboardProvider({
       );
 
       if (!response.ok) {
-        if (response.status === 402) {
-          router.push("/checkout");
-          return;
-        }
         throw new Error(getErrorMessage(payload, `Failed to create organization (${response.status}).`));
       }
 
@@ -251,8 +246,8 @@ export function OrgDashboardProvider({
     await updateOrganizationSettings({ name: trimmed });
   }
 
-  async function updateOrganizationSettings(input: { name?: string; allowedEmailDomains?: string[] | null; desktopAppRestrictions?: DenDesktopAppRestrictions; allowedDesktopVersions?: string[] | null }) {
-    const body: { name?: string; allowedEmailDomains?: string[] | null; desktopAppRestrictions?: DenDesktopAppRestrictions; allowedDesktopVersions?: string[] | null } = {};
+  async function updateOrganizationSettings(input: { name?: string; allowedEmailDomains?: string[] | null; allowedDesktopVersions?: string[] | null }) {
+    const body: { name?: string; allowedEmailDomains?: string[] | null; allowedDesktopVersions?: string[] | null } = {};
     if (typeof input.name === "string") {
       const trimmed = input.name.trim();
       if (!trimmed) {
@@ -262,9 +257,6 @@ export function OrgDashboardProvider({
     }
     if (input.allowedEmailDomains !== undefined) {
       body.allowedEmailDomains = input.allowedEmailDomains;
-    }
-    if (input.desktopAppRestrictions !== undefined) {
-      body.desktopAppRestrictions = input.desktopAppRestrictions;
     }
     if (input.allowedDesktopVersions !== undefined) {
       body.allowedDesktopVersions = input.allowedDesktopVersions;

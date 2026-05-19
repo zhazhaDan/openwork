@@ -1,11 +1,13 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@opencode-ai/sdk/v2/client";
-import { ArrowUp, Check, ChevronDown, ChevronRight, FileText, Paperclip, Plug, Settings, Square, Terminal, X, Zap } from "lucide-react";
+import { ArrowUp, ChevronRight, FileText, Paperclip, Plug, Settings, Square, Terminal, X, Zap } from "lucide-react";
 import fuzzysort from "fuzzysort";
 import type { CloudImportedPlugin, CloudImportedPluginFile } from "../../../../../app/cloud/import-state";
-import type { ComposerAttachment, McpServerEntry, McpStatusMap, SkillCard, SlashCommandOption } from "../../../../../app/types";
+import type { ComposerAttachment, McpServerEntry, McpStatusMap, ModelRef, SkillCard, SlashCommandOption } from "../../../../../app/types";
 import { t } from "../../../../../i18n";
+import { ModelBehaviorSelect } from "../../../../../components/model-behavior-select";
+import { ModelSelect } from "../../../../../components/model-select";
 import { LexicalPromptEditor } from "./editor";
 import {
   ReactComposerNotice,
@@ -37,9 +39,12 @@ type ComposerProps = {
   onStop: () => void | Promise<void>;
   busy: boolean;
   disabled: boolean;
+  modelUnavailable?: boolean;
   statusLabel: string;
-  modelLabel: string;
-  onModelClick: () => void;
+  modelPickerOpen: boolean;
+  selectedModel: ModelRef;
+  onModelPickerOpenChange: (open: boolean) => void;
+  onModelChange: (model: ModelRef) => void;
   attachments: ComposerAttachment[];
   onAttachFiles: (files: File[]) => void;
   onRemoveAttachment: (id: string) => void;
@@ -78,6 +83,7 @@ type ComposerProps = {
   onUploadInboxFiles?: ((files: File[]) => void | Promise<unknown>) | null;
   draftScopeKey?: string;
   compactTopSpacing?: boolean;
+  topAccessory?: ReactNode;
 };
 
 const FLUSH_PROMPT_EVENT = "openwork:flushPromptDraft";
@@ -86,8 +92,6 @@ const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const IMAGE_COMPRESS_MAX_PX = 2048;
 const IMAGE_COMPRESS_QUALITY = 0.82;
 const IMAGE_COMPRESS_TARGET_BYTES = 1_500_000;
-const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const ACCEPTED_FILE_TYPES = [...ACCEPTED_IMAGE_TYPES, "application/pdf"];
 const FILE_URL_RE = /^file:\/\//i;
 const HTTP_URL_RE = /^https?:\/\//i;
 
@@ -125,8 +129,6 @@ function formatBytes(size: number) {
 function isImageAttachment(attachment: ComposerAttachment) {
   return attachment.kind === "image" || attachment.mimeType.startsWith("image/");
 }
-
-const isSupportedAttachmentType = (mime: string) => ACCEPTED_FILE_TYPES.includes(mime);
 
 async function compressImageFile(file: File): Promise<File> {
   if (file.type === "image/gif" || file.size <= IMAGE_COMPRESS_TARGET_BYTES) {
@@ -247,7 +249,6 @@ export function ReactSessionComposer(props: ComposerProps) {
   let fileInput: HTMLInputElement | undefined;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
-  const [variantMenuOpen, setVariantMenuOpen] = useState(false);
   const [commands, setCommands] = useState<SlashCommandOption[]>([]);
   const [commandsLoading, setCommandsLoading] = useState(false);
   const [skillsLoading, setSkillsLoading] = useState(false);
@@ -268,11 +269,25 @@ export function ReactSessionComposer(props: ComposerProps) {
   const commandsCacheRef = useRef<SlashCommandOption[] | null>(null);
   const commandsRequestRef = useRef<Promise<SlashCommandOption[]> | null>(null);
   const commandsLoadVersionRef = useRef(0);
+  const listCommandsRef = useRef(props.listCommands);
+  const listSkillsRef = useRef(props.listSkills);
+  const listMcpRef = useRef(props.listMcp);
+  const listImportedPluginsRef = useRef(props.listImportedPlugins);
+  const toolMenuLoadRef = useRef({
+    openId: 0,
+    commands: false,
+    skills: false,
+    mcps: false,
+    plugins: false,
+  });
+  const [commandsLoaded, setCommandsLoaded] = useState(false);
+  const [skillsLoaded, setSkillsLoaded] = useState(Boolean(props.skills));
+  const [mcpLoaded, setMcpLoaded] = useState(Boolean(props.mcpServers));
+  const [pluginsLoaded, setPluginsLoaded] = useState(Boolean(props.importedPlugins));
   const [agentMenuIndex, setAgentMenuIndex] = useState(0);
   const agentItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [dropzoneActive, setDropzoneActive] = useState(false);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
-  const variantMenuRef = useRef<HTMLDivElement | null>(null);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
   // IME composition guard: while an IME composition is active, we must not
   // treat Enter as a submit. Three signals keep this reliable across WebKit,
@@ -322,6 +337,22 @@ export function ReactSessionComposer(props: ComposerProps) {
   }, [props.importedPlugins]);
 
   useEffect(() => {
+    listCommandsRef.current = props.listCommands;
+  }, [props.listCommands]);
+
+  useEffect(() => {
+    listSkillsRef.current = props.listSkills;
+  }, [props.listSkills]);
+
+  useEffect(() => {
+    listMcpRef.current = props.listMcp;
+  }, [props.listMcp]);
+
+  useEffect(() => {
+    listImportedPluginsRef.current = props.listImportedPlugins;
+  }, [props.listImportedPlugins]);
+
+  useEffect(() => {
     setAgentMenuIndex(0);
   }, [agentMenuOpen]);
 
@@ -344,7 +375,7 @@ export function ReactSessionComposer(props: ComposerProps) {
       return commandsRequestRef.current;
     }
     const version = commandsLoadVersionRef.current;
-    const request = props.listCommands().then((next) => {
+    const request = listCommandsRef.current().then((next) => {
       if (commandsLoadVersionRef.current === version) {
         commandsCacheRef.current = next;
       }
@@ -356,15 +387,34 @@ export function ReactSessionComposer(props: ComposerProps) {
     });
     commandsRequestRef.current = request;
     return request;
-  }, [props.listCommands]);
+  }, []);
+
+  useEffect(() => {
+    if (!toolMenuOpen) return;
+    toolMenuLoadRef.current = {
+      openId: toolMenuLoadRef.current.openId + 1,
+      commands: false,
+      skills: false,
+      mcps: false,
+      plugins: false,
+    };
+    setCommandsLoaded(false);
+    setSkillsLoaded(Boolean(props.skills));
+    setMcpLoaded(Boolean(props.mcpServers));
+    setPluginsLoaded(Boolean(props.importedPlugins));
+  }, [toolMenuOpen]);
 
   useEffect(() => {
     if (!slashOpen && !toolMenuOpen) return;
+    const openId = toolMenuLoadRef.current.openId;
+    if (toolMenuOpen && toolMenuLoadRef.current.commands) return;
+    if (toolMenuOpen) toolMenuLoadRef.current.commands = true;
     let cancelled = false;
     const cached = commandsCacheRef.current;
     if (cached !== null) {
       setCommands(cached);
       setCommandsLoading(false);
+      if (toolMenuOpen && toolMenuLoadRef.current.openId === openId) setCommandsLoaded(true);
       return () => {
         cancelled = true;
       };
@@ -372,10 +422,16 @@ export function ReactSessionComposer(props: ComposerProps) {
     setCommandsLoading(true);
     void loadCommands()
       .then((next) => {
-        if (!cancelled) setCommands(next);
+        if (!cancelled) {
+          setCommands(next);
+          if (toolMenuOpen && toolMenuLoadRef.current.openId === openId) setCommandsLoaded(true);
+        }
       })
       .catch(() => {
-        if (!cancelled) setCommands([]);
+        if (!cancelled) {
+          setCommands([]);
+          if (toolMenuOpen && toolMenuLoadRef.current.openId === openId) setCommandsLoaded(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setCommandsLoading(false);
@@ -420,20 +476,6 @@ export function ReactSessionComposer(props: ComposerProps) {
   }, [toolMenuOpen]);
 
   useEffect(() => {
-    if (!variantMenuOpen) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (variantMenuRef.current?.contains(target)) return;
-      setVariantMenuOpen(false);
-    };
-    window.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-    };
-  }, [variantMenuOpen]);
-
-  useEffect(() => {
     if (!agentMenuOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target;
@@ -449,69 +491,91 @@ export function ReactSessionComposer(props: ComposerProps) {
 
   useEffect(() => {
     if (!toolMenuOpen) return;
-    if (props.listImportedPlugins) {
+    const openId = toolMenuLoadRef.current.openId;
+    const listImportedPlugins = listImportedPluginsRef.current;
+    if (listImportedPlugins && !toolMenuLoadRef.current.plugins) {
       let cancelled = false;
+      toolMenuLoadRef.current.plugins = true;
       setPluginsLoading(true);
-      void props.listImportedPlugins()
+      void listImportedPlugins()
         .then((next) => {
-          if (!cancelled) setImportedPlugins(next);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) {
+            setImportedPlugins(next);
+            setPluginsLoaded(true);
+          }
         })
         .catch(() => {
-          if (!cancelled) setImportedPlugins([]);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) {
+            setImportedPlugins([]);
+            setPluginsLoaded(true);
+          }
         })
         .finally(() => {
-          if (!cancelled) setPluginsLoading(false);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) setPluginsLoading(false);
         });
       return () => {
         cancelled = true;
       };
     }
     return undefined;
-  }, [toolMenuOpen, props.listImportedPlugins]);
+  }, [toolMenuOpen]);
 
   useEffect(() => {
     if (!toolMenuOpen) return;
-    if (toolMenuSection === "skills" && props.listSkills) {
+    const openId = toolMenuLoadRef.current.openId;
+    const listSkills = listSkillsRef.current;
+    const listMcp = listMcpRef.current;
+    if (toolMenuSection === "skills" && listSkills && !toolMenuLoadRef.current.skills) {
       let cancelled = false;
+      toolMenuLoadRef.current.skills = true;
       setSkillsLoading(true);
-      void props.listSkills()
+      void listSkills()
         .then((next) => {
-          if (!cancelled) setSkills(next);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) {
+            setSkills(next);
+            setSkillsLoaded(true);
+          }
         })
         .catch(() => {
-          if (!cancelled) setSkills([]);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) {
+            setSkills([]);
+            setSkillsLoaded(true);
+          }
         })
         .finally(() => {
-          if (!cancelled) setSkillsLoading(false);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) setSkillsLoading(false);
         });
       return () => {
         cancelled = true;
       };
     }
-    if (toolMenuSection === "mcps" && props.listMcp) {
+    if (toolMenuSection === "mcps" && listMcp && !toolMenuLoadRef.current.mcps) {
       let cancelled = false;
+      toolMenuLoadRef.current.mcps = true;
       setMcpLoading(true);
-      void props.listMcp()
+      void listMcp()
         .then((next) => {
-          if (cancelled) return;
+          if (cancelled || toolMenuLoadRef.current.openId !== openId) return;
           setMcpServers(next.servers);
           setMcpStatuses(next.statuses);
           setMcpStatus(next.status);
+          setMcpLoaded(true);
         })
         .catch(() => {
-          if (cancelled) return;
+          if (cancelled || toolMenuLoadRef.current.openId !== openId) return;
           setMcpServers([]);
           setMcpStatuses({});
+          setMcpLoaded(true);
         })
         .finally(() => {
-          if (!cancelled) setMcpLoading(false);
+          if (!cancelled && toolMenuLoadRef.current.openId === openId) setMcpLoading(false);
         });
       return () => {
         cancelled = true;
       };
     }
     return undefined;
-  }, [toolMenuOpen, toolMenuSection, props.listSkills, props.listMcp]);
+  }, [toolMenuOpen, toolMenuSection]);
 
   const slashFiltered = useMemo(() => {
     if (!slashOpen) return [];
@@ -667,7 +731,6 @@ export function ReactSessionComposer(props: ComposerProps) {
       if (event.key === "Escape") {
         event.preventDefault();
         setAgentMenuOpen(false);
-        setVariantMenuOpen(false);
         return;
       }
     }
@@ -713,14 +776,9 @@ export function ReactSessionComposer(props: ComposerProps) {
     }
 
     const accepted: File[] = [];
-    const unsupported: string[] = [];
     const oversize: string[] = [];
 
     for (const original of inputFiles) {
-      if (!isSupportedAttachmentType(original.type)) {
-        unsupported.push(original.name || t("composer.file_kind"));
-        continue;
-      }
       const processed = original.type.startsWith("image/") ? await compressImageFile(original) : original;
       if (processed.size > MAX_ATTACHMENT_BYTES) {
         oversize.push(processed.name || original.name);
@@ -750,15 +808,6 @@ export function ReactSessionComposer(props: ComposerProps) {
       });
     }
 
-    if (unsupported.length) {
-      props.onNotice({
-        title:
-          unsupported.length === 1
-            ? `${unsupported[0]} · ${t("composer.unsupported_attachment_type")}`
-            : `${unsupported.length} ${t("composer.unsupported_attachment_type").toLowerCase()}`,
-        tone: "warning",
-      });
-    }
   };
 
   const activeMcpItems = mcpServers.map((entry) => ({
@@ -769,16 +818,17 @@ export function ReactSessionComposer(props: ComposerProps) {
   const panelRoundedClass =
     mentionOpen || slashOpen
       ? "rounded-t-[18px] border-t-transparent"
-      : "shadow-[var(--dls-shell-shadow)]";
+      : "";
 
   const renderSlashMenu = () => {
     if (!slashOpen) return null;
     return (
       <div className="absolute bottom-full left-[-1px] right-[-1px] z-30">
-        <div className="overflow-hidden rounded-t-[20px] border border-dls-border border-b-0 bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-          <div
-            className="max-h-64 overflow-y-auto p-2"
-            onMouseDown={(event) => event.preventDefault()}
+          <div className="overflow-hidden rounded-t-[20px] border border-dls-border border-b-0 bg-dls-surface shadow-[var(--dls-shell-shadow)]">
+            <div
+              role="presentation"
+              className="max-h-64 overflow-y-auto p-2"
+              onMouseDown={(event) => event.preventDefault()}
           >
             {slashFiltered.length > 0 ? (
               <div className="grid gap-1">
@@ -817,7 +867,7 @@ export function ReactSessionComposer(props: ComposerProps) {
               </div>
             ) : (
               <div className="px-3 py-2 text-xs text-gray-10">
-                {commandsLoading ? t("composer.loading_commands") : t("composer.no_commands")}
+                {!commandsLoaded && commandsLoading ? t("composer.loading_commands") : t("composer.no_commands")}
               </div>
             )}
           </div>
@@ -830,10 +880,11 @@ export function ReactSessionComposer(props: ComposerProps) {
     if (!mentionOpen || mentionFiltered.length === 0) return null;
     return (
       <div className="absolute bottom-full left-[-1px] right-[-1px] z-30">
-        <div className="overflow-hidden rounded-t-[20px] border border-dls-border border-b-0 bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-          <div
-            className="max-h-64 overflow-y-auto p-2"
-            onMouseDown={(event) => event.preventDefault()}
+          <div className="overflow-hidden rounded-t-[20px] border border-dls-border border-b-0 bg-dls-surface shadow-[var(--dls-shell-shadow)]">
+            <div
+              role="presentation"
+              className="max-h-64 overflow-y-auto p-2"
+              onMouseDown={(event) => event.preventDefault()}
           >
             <div className="grid gap-1">
               {mentionFiltered.map((item, index) => (
@@ -875,7 +926,7 @@ export function ReactSessionComposer(props: ComposerProps) {
   return (
     <div
       ref={rootRef}
-      className={`sticky bottom-0 z-20 bg-gradient-to-t from-dls-surface via-dls-surface/95 to-transparent px-4 md:px-8 pb-5 ${props.compactTopSpacing ? "pt-0" : "pt-3"}`}
+      className={`sticky bottom-0 ${toolMenuOpen ? "z-50" : "z-20"} bg-gradient-to-t from-dls-surface via-dls-surface/95 to-transparent px-4 md:px-8 pb-5 ${props.compactTopSpacing ? "pt-0" : "pt-3"}`}
       style={{ contain: "layout style" }}
       onKeyDownCapture={handleKeyDownCapture}
       onCompositionStart={() => {
@@ -890,6 +941,7 @@ export function ReactSessionComposer(props: ComposerProps) {
         <div
           className={`relative overflow-visible rounded-[24px] border border-dls-border bg-dls-surface transition-all ${panelRoundedClass}`}
         >
+          {props.topAccessory ? <div className="relative z-10">{props.topAccessory}</div> : null}
           <ReactComposerNotice notice={props.notice} />
 
           {renderMentionMenu()}
@@ -939,7 +991,7 @@ export function ReactSessionComposer(props: ComposerProps) {
             <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-[20px] border-2 border-dashed border-dls-accent bg-[color:color-mix(in_oklab,var(--dls-accent)_10%,transparent)]">
               <div className="rounded-2xl border border-dls-border bg-dls-surface/95 px-5 py-4 text-center backdrop-blur-sm">
                 <div className="text-sm font-medium text-dls-text">{t("composer.attach_files")}</div>
-                <div className="mt-1 text-xs text-dls-secondary">Images and PDFs are supported.</div>
+                <div className="mt-1 text-xs text-dls-secondary">{t("composer.any_file_type_supported")}</div>
               </div>
             </div>
           ) : null}
@@ -987,17 +1039,11 @@ export function ReactSessionComposer(props: ComposerProps) {
 
                 const text = event.clipboardData?.getData("text/plain") ?? "";
 
-                // Collapse long pastes into an inline chip. The threshold
-                // is 3+ lines or 200+ characters — short pastes still go
-                // straight into the editor as plain text.
-                const PASTE_CHIP_LINE_THRESHOLD = 3;
-                const PASTE_CHIP_CHAR_THRESHOLD = 200;
-                const lineCount = text.split(/\r?\n/).length;
-                if (text.trim() && (lineCount >= PASTE_CHIP_LINE_THRESHOLD || text.length >= PASTE_CHIP_CHAR_THRESHOLD)) {
-                  event.preventDefault();
-                  props.onPasteText(text);
-                  return;
-                }
+                // Long pastes (3+ lines / 200+ chars) are collapsed into
+                // an inline chip by PasteChipPlugin inside the Lexical
+                // editor. Do NOT duplicate that here — calling onPasteText
+                // from both the React onPaste handler and the Lexical
+                // PASTE_COMMAND handler causes double chip creation.
 
                 if (
                   text.trim() &&
@@ -1153,7 +1199,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                               </div>
                             ) : (
                               <div className="px-3 py-2 text-xs text-gray-10">
-                                {commandsLoading ? t("composer.loading_commands") : t("composer.no_commands")}
+                                {!commandsLoaded && commandsLoading ? t("composer.loading_commands") : t("composer.no_commands")}
                               </div>
                             )
                           ) : null}
@@ -1177,7 +1223,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                               </div>
                             ) : (
                               <div className="px-3 py-2 text-xs text-gray-10">
-                                {skillsLoading || commandsLoading ? t("composer.loading_commands") : t("context_panel.no_skills")}
+                                {(!skillsLoaded && skillsLoading) || (!commandsLoaded && commandsLoading) ? t("composer.loading_commands") : t("context_panel.no_skills")}
                               </div>
                             )
                           ) : null}
@@ -1201,7 +1247,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                               </div>
                             ) : (
                               <div className="px-3 py-2 text-xs text-gray-10">
-                                {mcpLoading ? t("composer.loading_commands") : (mcpStatus ?? t("context_panel.no_mcp"))}
+                                {!mcpLoaded && mcpLoading ? t("composer.loading_commands") : (mcpStatus ?? t("context_panel.no_mcp"))}
                               </div>
                             )
                           ) : null}
@@ -1232,7 +1278,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                             )
                           ) : toolMenuSection.startsWith("plugin:") ? (
                             <div className="px-3 py-2 text-xs text-gray-10">
-                              {pluginsLoading ? t("composer.loading_commands") : "Plugin files are unavailable."}
+                              {!pluginsLoaded && pluginsLoading ? t("composer.loading_commands") : "Plugin files are unavailable."}
                             </div>
                           ) : null}
                         </div>
@@ -1267,7 +1313,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                     className={`inline-flex h-9 max-h-9 items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-colors ${
                       !canSend || props.disabled
                         ? "bg-gray-4 text-gray-10"
-                        : "bg-[var(--dls-accent)] text-white hover:bg-[var(--dls-accent-hover)]"
+                        : "bg-[var(--dls-accent)] text-[var(--dls-accent-fg)] hover:bg-[var(--dls-accent-hover)]"
                     }`}
                     title={t("composer.run_task")}
                   >
@@ -1283,6 +1329,7 @@ export function ReactSessionComposer(props: ComposerProps) {
         {/* Below-panel control strip: agent + model + behavior variant */}
         <div className="mt-1 flex items-center justify-between px-1">
           <div className="flex flex-wrap items-center gap-1.5 text-gray-10 sm:gap-2.5">
+            {/* TODO: Decide what to do with agent selection before showing this control again.
             <div ref={agentMenuRef} className="relative">
               <button
                 type="button"
@@ -1301,6 +1348,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                     {t("composer.agent_label")}
                   </div>
                   <div
+                    role="presentation"
                     className="space-y-1 p-2 max-h-64 overflow-y-auto"
                     onMouseDown={(event) => event.preventDefault()}
                   >
@@ -1346,78 +1394,26 @@ export function ReactSessionComposer(props: ComposerProps) {
                 </div>
               ) : null}
             </div>
+            */}
 
-            <button
-              type="button"
-              className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-[12px] font-medium text-gray-10 transition-colors hover:bg-gray-3 hover:text-gray-12"
-              onClick={props.onModelClick}
+            <ModelSelect
+              open={props.modelPickerOpen}
+              value={props.selectedModel}
+              onOpenChange={props.onModelPickerOpenChange}
+              onChange={props.onModelChange}
               disabled={props.busy}
-            >
-              <span className="truncate leading-tight">{props.modelLabel}</span>
-              <ChevronDown size={13} className="shrink-0 ml-0.5" />
-            </button>
-
-            {props.modelBehaviorOptions?.length ? (
-              <div ref={variantMenuRef} className="relative">
-                <button
-                  type="button"
-                  className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[12px] font-medium text-gray-10 transition-colors hover:bg-gray-3 hover:text-gray-12"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setVariantMenuOpen((value) => !value);
-                  }}
-                  disabled={props.busy}
-                  aria-expanded={variantMenuOpen}
-                >
-                  <span className="truncate leading-tight">
-                    {/* Pill label is the summary resolved by session-route:
-                        if modelVariant is null it already carries the
-                        provider-default preset's label (e.g. "Balanced"). */}
-                    {props.modelVariantLabel ||
-                      (props.modelBehaviorOptions.find((option) => option.value === props.modelVariant)?.label ?? "") ||
-                      t("settings.default_label")}
-                  </span>
-                  <ChevronDown size={13} className="shrink-0 ml-0.5" />
-                </button>
-                {variantMenuOpen ? (
-                  <div className="absolute left-0 bottom-full z-40 mb-2 w-48 overflow-hidden rounded-[18px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-                    <div className="border-b border-dls-border px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-10">
-                      {t("composer.behavior_label")}
-                    </div>
-                    <div className="space-y-1 p-2">
-                      {props.modelBehaviorOptions.map((option) => {
-                        // Highlight the row whose label matches the pill. When
-                        // modelVariant is null but the provider-default is
-                        // e.g. "medium", the "medium" row should render as
-                        // selected — user sees the actual active mode.
-                        const isActive =
-                          props.modelVariant === option.value ||
-                          (props.modelVariant == null && option.label === props.modelVariantLabel);
-                        return (
-                          <button
-                            key={option.value ?? "default"}
-                            type="button"
-                            className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors ${
-                              isActive ? "bg-gray-2 text-gray-12" : "text-gray-11 hover:bg-gray-2/70"
-                            }`}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              props.onModelVariantChange(option.value);
-                              setVariantMenuOpen(false);
-                            }}
-                          >
-                            <span>{option.label}</span>
-                            {isActive ? <Check size={14} className="text-gray-10" /> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+            />
+            {props.modelUnavailable ? (
+              <span className="text-xs font-medium text-red-10">Model no longer available</span>
             ) : null}
+
+            <ModelBehaviorSelect
+              value={props.modelVariant}
+              label={props.modelVariantLabel}
+              options={props.modelBehaviorOptions}
+              onChange={props.onModelVariantChange}
+              disabled={props.busy}
+            />
           </div>
 
           {/* Status label removed — redundant with the footer bar */}

@@ -144,7 +144,7 @@ export async function listPortableFiles(workspaceRoot: string): Promise<Portable
 
 export async function listPortableFilePaths(workspaceRoot: string): Promise<string[]> {
   const root = resolve(workspaceRoot);
-  const portableRoot = join(root, ".opencode");
+  const portableRoot = join(root, ".tron");
   if (!(await exists(portableRoot))) return [];
 
   const output: string[] = [];

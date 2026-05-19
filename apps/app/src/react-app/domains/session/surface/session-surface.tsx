@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { UIMessage } from "ai";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
+import { Check, Minimize2 } from "lucide-react";
 
 import { createClient, unwrap } from "../../../../app/lib/opencode";
 import { abortSessionSafe } from "../../../../app/lib/opencode-session";
+import { t } from "../../../../i18n";
 import { readWorkspaceCloudImports, type CloudImportedPlugin } from "../../../../app/cloud/import-state";
 import type {
   OpenworkServerClient,
@@ -17,7 +19,10 @@ import type {
   ComposerPart,
   McpServerEntry,
   McpStatusMap,
+  ModelRef,
+  PendingPermission,
   SkillCard,
+  TodoItem,
 } from "../../../../app/types";
 import {
   publishInspectorSlice,
@@ -27,14 +32,19 @@ import { useControlAction, type OpenworkControlAction } from "../../../shell/con
 import { getReactQueryClient } from "../../../infra/query-client";
 import { ReactSessionComposer } from "./composer/composer";
 import { DevProfiler } from "../../../shell/dev-profiler";
+import { PaperGrainGradient } from "@openwork/ui/react";
 import { OwDotTicker } from "../../../shell/dot-ticker";
+import { useShellConfig } from "../../../shell/shell-config";
 import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
 import type { ReactComposerNotice } from "./composer/notice";
 import { SessionDebugPanel } from "./debug-panel";
 import { deriveRenderedSessionMessages, resolveRenderedSessionSnapshot } from "./session-render-state";
 import { SessionTranscript } from "./message-list";
+import { useLocal } from "../../../kernel/local-provider";
 import { deriveSessionRenderModel } from "../sync/transition-controller";
 import { useSessionScrollController } from "./scroll-controller";
+import { PermissionApprovalPanel } from "../chat/permission-approval-modal";
+import { deriveOpenTargets, selectAutoOpenTarget, type OpenTarget } from "../artifacts/open-target";
 import {
   seedSessionState,
   statusKey as reactStatusKey,
@@ -64,6 +74,11 @@ export type SessionSurfaceProps = {
   developerMode: boolean;
   modelLabel: string;
   onModelClick: () => void;
+  modelPickerOpen: boolean;
+  modelUnavailable?: boolean;
+  selectedModel: ModelRef;
+  onModelPickerOpenChange: (open: boolean) => void;
+  onModelChange: (model: ModelRef) => void;
   onSendDraft: (draft: ComposerDraft) => void;
   onDraftChange: (draft: ComposerDraft) => void;
   attachmentsEnabled: boolean;
@@ -81,9 +96,18 @@ export type SessionSurfaceProps = {
   searchFiles: (query: string) => Promise<string[]>;
   isRemoteWorkspace: boolean;
   isSandboxWorkspace: boolean;
+  todos?: TodoItem[];
+  activePermission?: PendingPermission | null;
+  permissionReplyBusy?: boolean;
+  respondPermission?: (requestID: string, reply: "once" | "always" | "reject") => void;
+  safeStringify?: (value: unknown) => string;
   onChangeModel?: (model: { providerID: string; modelID: string }) => void;
   onUploadInboxFiles?: ((files: File[], options?: { notify?: boolean }) => void | Promise<unknown>) | null;
   onOpenSettingsSection?: ((section: "commands" | "skills" | "mcps" | "plugins") => void) | undefined;
+  onRevertToMessage?: (messageId: string) => void;
+  onForkAtMessage?: (messageId: string) => void;
+  onOpenTarget?: (target: OpenTarget, options?: { auto?: boolean }) => void;
+  onOpenTargetsChange?: (targets: OpenTarget[]) => void;
 };
 
 function messageToReadableText(message: UIMessage) {
@@ -105,8 +129,10 @@ function messageToReadableText(message: UIMessage) {
 
 function transcriptToText(messages: UIMessage[]) {
   return messages
-    .map(messageToReadableText)
-    .filter(Boolean)
+    .flatMap((message) => {
+      const text = messageToReadableText(message);
+      return text ? [text] : [];
+    })
     .join("\n\n---\n\n");
 }
 
@@ -150,11 +176,80 @@ function messageHasVisibleAssistantOutput(message: UIMessage) {
 
 function AssistantWaitingCard() {
   return (
-    <div className="flex justify-start py-2" role="status" aria-live="polite">
-      <div className="inline-flex items-center gap-3 rounded-full px-3 py-1.5 text-[12px] text-dls-secondary">
-        <OwDotTicker size="sm" />
+    <div className="flex justify-start" role="status" aria-live="polite">
+      <div className="inline-flex items-center gap-1.5 px-1 py-1 text-[12px] text-dls-secondary">
+        <div style={{ width: 20, height: 20, borderRadius: "50%", overflow: "hidden" }}>
+          <PaperGrainGradient
+            speed={12}
+            softness={0.1}
+            intensity={1}
+            noise={0.05}
+            shape="sphere"
+            colors={["#818cf8", "#fb7185", "#fbbf24", "#34d399"]}
+            colorBack="#ffffff00"
+            style={{ backgroundColor: "#818cf8", width: "100%", height: "100%", borderRadius: "50%" }}
+          />
+        </div>
         <span>Thinking</span>
       </div>
+    </div>
+  );
+}
+
+function TodoPanel(props: { todos: TodoItem[] }) {
+  const [expanded, setExpanded] = useState(true);
+  const todos = props.todos.filter((todo) => todo.content.trim());
+  const completedTodos = todos.filter((todo) => todo.status === "completed").length;
+  const label = completedTodos > 0
+    ? t("session.todo_progress_label", { completed: completedTodos, total: todos.length })
+    : t("session.todo_label", { count: todos.length });
+
+  if (todos.length === 0) return null;
+
+  return (
+    <div className="overflow-hidden border-b border-dls-border bg-transparent">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between px-4 py-3 text-xs text-gray-9 transition-colors hover:bg-gray-2/50"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-gray-11">{label}</span>
+          </div>
+          <Minimize2 size={12} className={`text-gray-8 transition-transform ${expanded ? "" : "rotate-180"}`} />
+        </button>
+        {expanded ? (
+          <div className="max-h-60 space-y-2.5 overflow-auto border-t border-dls-border px-4 pb-3">
+            {todos.map((todo, index) => {
+              const done = todo.status === "completed";
+              const cancelled = todo.status === "cancelled";
+              const active = todo.status === "in_progress";
+              return (
+                <div key={todo.id} className="flex items-start gap-2.5 pt-2.5 first:pt-2.5">
+                  <div className="flex items-center gap-1.5 pt-0.5">
+                    <div
+                      className={`flex size-4.5 items-center justify-center rounded-full border ${
+                        done
+                          ? "border-green-6 bg-green-2 text-green-11"
+                          : active
+                            ? "border-amber-6 bg-amber-2 text-amber-11"
+                            : cancelled
+                              ? "border-gray-6 bg-gray-2 text-gray-8"
+                              : "border-gray-6 bg-gray-1 text-gray-8"
+                      }`}
+                    >
+                      {done ? <Check size={10} /> : active ? <span className="size-1.5 rounded-full bg-amber-9" /> : null}
+                    </div>
+                  </div>
+                  <div className={`flex-1 text-sm leading-relaxed ${cancelled ? "text-gray-9 line-through" : "text-gray-12"}`}>
+                    <span className="mr-1.5 text-gray-9">{index + 1}.</span>
+                    {todo.content}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
     </div>
   );
 }
@@ -246,6 +341,9 @@ function revokeAttachmentPreview(attachment: { previewUrl?: string | undefined }
 }
 
 export function SessionSurface(props: SessionSurfaceProps) {
+  const local = useLocal();
+  const { config: shellConfig } = useShellConfig();
+  const showThinking = local.prefs.showThinking;
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [mentions, setMentions] = useState<Record<string, "agent" | "file">>({});
@@ -261,8 +359,10 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const [toolMcpStatus, setToolMcpStatus] = useState<string | null>(null);
   const [toolMcpStatuses, setToolMcpStatuses] = useState<McpStatusMap>({});
   const [toolImportedPlugins, setToolImportedPlugins] = useState<CloudImportedPlugin[]>([]);
+  const [verifiedOpenTargets, setVerifiedOpenTargets] = useState<OpenTarget[]>([]);
   const composerShellRef = useRef<HTMLDivElement>(null);
   const hydratedKeyRef = useRef<string | null>(null);
+  const autoOpenedTargetRef = useRef<string | null>(null);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   attachmentsRef.current = attachments;
   const opencodeClient = useMemo(
@@ -315,6 +415,8 @@ export function SessionSurface(props: SessionSurfaceProps) {
     setMentions({});
     setPasteParts([]);
     setNotice(null);
+    autoOpenedTargetRef.current = null;
+    setVerifiedOpenTargets([]);
   }, [props.sessionId]);
 
   useEffect(() => {
@@ -377,7 +479,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
   useEffect(() => {
     if (!currentSnapshot) return;
     seedSessionState(props.workspaceId, currentSnapshot);
-  }, [currentSnapshot, props.workspaceId]);
+  }, [currentSnapshot, props.sessionId, props.workspaceId]);
 
   useEffect(() => {
     if (!currentSnapshot) return;
@@ -395,9 +497,15 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const liveStatus = statusState ?? snapshot?.status ?? IDLE_STATUS;
   const chatStreaming = sending || liveStatus.type === "busy" || liveStatus.type === "retry";
   const renderedMessages = useMemo(
-    () => deriveRenderedSessionMessages({ transcriptState, snapshot, includeLiveOnlyMessages: chatStreaming }),
-    [chatStreaming, snapshot, transcriptState],
+    () => deriveRenderedSessionMessages({ transcriptState, snapshot }),
+    [snapshot, transcriptState],
   );
+  const openTargets = useMemo(() => deriveOpenTargets(renderedMessages), [renderedMessages]);
+  const openTargetsFingerprint = useMemo(
+    () => openTargets.map((target) => `${target.kind}:${target.value}:${target.confidence}`).join("|"),
+    [openTargets],
+  );
+  const autoOpenTarget = selectAutoOpenTarget(verifiedOpenTargets);
   const pendingSessionLoad = !snapshot && snapshotQuery.isLoading && renderedMessages.length === 0;
   const assistantOutputAfterAwaitStart = useMemo(() => {
     if (awaitingAssistantBaseline === null) return false;
@@ -416,6 +524,35 @@ export function SessionSurface(props: SessionSurfaceProps) {
     showAssistantWaitState,
     hasSnapshot: Boolean(snapshot),
   });
+
+  useEffect(() => {
+    if (!autoOpenTarget || chatStreaming) return;
+    if (autoOpenedTargetRef.current === autoOpenTarget.id) return;
+    autoOpenedTargetRef.current = autoOpenTarget.id;
+    props.onOpenTarget?.(autoOpenTarget, { auto: true });
+  }, [autoOpenTarget, chatStreaming, props.onOpenTarget]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function verifyTargets() {
+      if (!openTargets.length) {
+        setVerifiedOpenTargets([]);
+        return;
+      }
+      try {
+        const response = await props.client.resolveArtifacts(props.workspaceId, openTargets);
+        if (!cancelled) setVerifiedOpenTargets(response.items as OpenTarget[]);
+      } catch {
+        if (!cancelled) setVerifiedOpenTargets(openTargets.map((target) => ({ ...target, exists: target.kind === "url" })));
+      }
+    }
+    void verifyTargets();
+    return () => { cancelled = true; };
+  }, [openTargetsFingerprint, props.client, props.workspaceId]);
+
+  useEffect(() => {
+    props.onOpenTargetsChange?.(verifiedOpenTargets);
+  }, [props.onOpenTargetsChange, verifiedOpenTargets]);
 
   useEffect(() => {
     if (!pendingSessionLoad) {
@@ -645,13 +782,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
     label: "Send the composer prompt",
     description: "Send the currently visible composer draft to the active session.",
     sideEffect: "mutation",
-    disabled: (!draft.trim() && attachments.length === 0) || model.transitionState !== "idle",
+    disabled: props.modelUnavailable || (!draft.trim() && attachments.length === 0) || model.transitionState !== "idle",
     targetRef: composerShellRef,
     execute: async () => {
       await handleSend();
       return true;
     },
-  }), [attachments.length, draft, handleSend, model.transitionState]);
+  }), [attachments.length, draft, handleSend, model.transitionState, props.modelUnavailable]);
   useControlAction(composerSendControlAction);
 
   const composerStopControlAction = useMemo<OpenworkControlAction>(() => ({
@@ -882,6 +1019,47 @@ export function SessionSurface(props: SessionSurfaceProps) {
                   onChangeModel={props.onChangeModel}
                   onOpenModelPicker={props.onModelClick}
                 />
+              ) : shellConfig.starterCards ? (
+                <div className="flex flex-1 flex-col items-center justify-end px-6 pb-4">
+                  <div className="w-full max-w-[640px]">
+                    <p className="mb-3 text-xs text-dls-secondary">Try one of these:</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="flex flex-1 items-start gap-2.5 rounded-xl border border-dls-border bg-dls-surface p-3 text-left transition-colors hover:bg-dls-hover"
+                        onClick={() => void typeComposerText("Create a sample CSV file with 20 rows of fake customer data (name, email, company, revenue). Then show me a summary of the data.")}
+                      >
+                        <img src="https://cdn.simpleicons.org/googlesheets" alt="" width={16} height={16} className="mt-0.5 shrink-0" />
+                        <div>
+                          <div className="text-[12px] font-medium text-dls-text">Edit a CSV</div>
+                          <div className="text-[11px] text-dls-secondary">Create a sample spreadsheet</div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="flex flex-1 items-start gap-2.5 rounded-xl border border-dls-border bg-dls-surface p-3 text-left transition-colors hover:bg-dls-hover"
+                        onClick={() => void typeComposerText("Open craigslist.org in the browser and search for couches for sale. Show me the top 5 results with prices.")}
+                      >
+                        <img src="https://cdn.simpleicons.org/googlechrome" alt="" width={16} height={16} className="mt-0.5 shrink-0" />
+                        <div>
+                          <div className="text-[12px] font-medium text-dls-text">Browse the web</div>
+                          <div className="text-[11px] text-dls-secondary">Search Craigslist for couches</div>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="flex flex-1 items-start gap-2.5 rounded-xl border border-dls-border bg-dls-surface p-3 text-left transition-colors hover:bg-dls-hover"
+                        onClick={() => props.onOpenSettingsSection?.("mcps")}
+                      >
+                        <img src="https://cdn.simpleicons.org/hackthebox" alt="" width={16} height={16} className="mt-0.5 shrink-0" />
+                        <div>
+                          <div className="text-[12px] font-medium text-dls-text">Connect an extension</div>
+                          <div className="text-[11px] text-dls-secondary">Add MCPs and integrations</div>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : null
             ) : (
               <DevProfiler id="SessionTranscript">
@@ -890,7 +1068,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
                     messages={renderedMessages}
                     isStreaming={chatStreaming}
                     developerMode={props.developerMode}
+                    showThinking={showThinking}
                     scrollElement={() => scrollRef.current}
+                    onRevertToMessage={props.onRevertToMessage}
+                    onForkAtMessage={props.onForkAtMessage}
+                    openTargets={verifiedOpenTargets}
+                    onOpenTarget={props.onOpenTarget}
                   />
                   {error ? (
                     <SessionErrorCard
@@ -945,10 +1128,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
         onSend={handleSend}
         onStop={handleAbort}
         busy={chatStreaming}
-        disabled={model.transitionState !== "idle"}
+        disabled={model.transitionState !== "idle" || Boolean(props.modelUnavailable)}
+        modelUnavailable={Boolean(props.modelUnavailable)}
         statusLabel={statusLabel(snapshot ?? undefined, chatStreaming)}
-        modelLabel={props.modelLabel}
-        onModelClick={props.onModelClick}
+        modelPickerOpen={props.modelPickerOpen}
+        selectedModel={props.selectedModel}
+        onModelPickerOpenChange={props.onModelPickerOpenChange}
+        onModelChange={props.onModelChange}
         attachments={attachments}
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
@@ -985,6 +1171,22 @@ export function SessionSurface(props: SessionSurfaceProps) {
         isRemoteWorkspace={props.isRemoteWorkspace}
           isSandboxWorkspace={props.isSandboxWorkspace}
           onUploadInboxFiles={props.onUploadInboxFiles ?? handleUploadInboxFiles}
+          compactTopSpacing={Boolean((props.todos ?? []).some((todo) => todo.content.trim()) || props.activePermission)}
+          topAccessory={
+            (props.todos ?? []).some((todo) => todo.content.trim()) || props.activePermission ? (
+              <div>
+                <TodoPanel todos={props.todos ?? []} />
+                {props.activePermission ? (
+                  <PermissionApprovalPanel
+                    permission={props.activePermission}
+                    busy={props.permissionReplyBusy}
+                    respondPermission={props.respondPermission}
+                    safeStringify={props.safeStringify}
+                  />
+                ) : null}
+              </div>
+            ) : null
+          }
         />
         </DevProfiler>
       </div>

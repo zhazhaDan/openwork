@@ -12,10 +12,12 @@ import {
   FileText,
   Home,
   KeyRound,
+  Laptop,
   LogOut,
   MessageSquare,
   Puzzle,
   SlidersHorizontal,
+  Sparkles,
   Store,
   Users,
 } from "lucide-react";
@@ -26,8 +28,10 @@ import {
   getApiKeysRoute,
   getBillingRoute,
   getCustomLlmProvidersRoute,
+  getDesktopPoliciesRoute,
   getOrgAccessFlags,
   getIntegrationsRoute,
+  getInferenceRoute,
   getMembersRoute,
   getOrgDashboardRoute,
   getOrgSettingsRoute,
@@ -107,10 +111,16 @@ function getDashboardPageTitle(pathname: string, orgSlug: string | null) {
     return "API Keys";
   }
   if (pathname.startsWith(getBackgroundAgentsRoute(orgSlug))) {
-    return "Shared Workspaces";
+    return "Background Tasks";
   }
   if (pathname.startsWith(getCustomLlmProvidersRoute(orgSlug))) {
     return "LLM Providers";
+  }
+  if (pathname.startsWith(getDesktopPoliciesRoute(orgSlug))) {
+    return "Desktop Policies";
+  }
+  if (pathname.startsWith(getInferenceRoute(orgSlug))) {
+    return "OpenWork Models";
   }
   if (pathname.startsWith(getSkillHubsRoute(orgSlug))) {
     return "Skill Hubs";
@@ -164,11 +174,18 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       label: "Dashboard",
       icon: Home,
     },
+    // NOTE: Shared Workspace soft-disabled — uncomment to re-enable
+    // {
+    //   href: activeOrg ? getBackgroundAgentsRoute(activeOrg.slug) : "#",
+    //   label: "Shared Workspace",
+    //   icon: Bot,
+    //   badge: "Alpha",
+    // },
     {
-      href: activeOrg ? getBackgroundAgentsRoute(activeOrg.slug) : "#",
-      label: "Shared Workspace",
-      icon: Bot,
-      badge: "Alpha",
+      href: activeOrg ? getInferenceRoute(activeOrg.slug) : "#",
+      label: "OpenWork Models",
+      icon: Sparkles,
+      badge: "Beta",
     },
     {
       href: activeOrg ? getCustomLlmProvidersRoute(activeOrg.slug) : "#",
@@ -176,10 +193,16 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       icon: Cpu,
     },
     {
-      href: activeOrg ? getSkillHubsRoute(activeOrg.slug) : "#",
-      label: "Skill Hubs",
-      icon: BookOpen,
+      href: activeOrg ? getDesktopPoliciesRoute(activeOrg.slug) : "#",
+      label: "Desktop Policies",
+      icon: Laptop,
     },
+    // NOTE: Skill Hubs soft-disabled — uncomment to re-enable
+    // {
+    //   href: activeOrg ? getSkillHubsRoute(activeOrg.slug) : "#",
+    //   label: "Skill Hubs",
+    //   icon: BookOpen,
+    // },
     {
       href: activeOrg ? getIntegrationsRoute(activeOrg.slug) : "#",
       label: "Integrations",

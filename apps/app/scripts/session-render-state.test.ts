@@ -6,7 +6,7 @@ import {
   deriveRenderedSessionMessages,
   resolveRenderedSessionSnapshot,
 } from "../src/react-app/domains/session/surface/session-render-state";
-import { mergeSnapshotIntoCachedMessages } from "../src/react-app/domains/session/sync/message-merge";
+import { reconcileTranscriptMessages } from "../src/react-app/domains/session/sync/transcript-reconcile";
 
 function snapshotWithMessages(
   messages: Array<{ id: string; role: "user" | "assistant"; text: string }>,
@@ -55,16 +55,40 @@ function snapshotWithText(text: string, sessionId = "ses_test"): OpenworkSession
   return snapshotWithMessages([{ id: "msg_user", role: "user", text }], sessionId);
 }
 
-describe("mergeSnapshotIntoCachedMessages", () => {
+describe("reconcileTranscriptMessages", () => {
+  it("hydrates an empty transcript cache from the snapshot", () => {
+    const snapshot = [uiMessage("msg_user", "user", "hello")];
+
+    expect(reconcileTranscriptMessages({
+      currentMessages: [],
+      snapshotMessages: snapshot,
+      reason: "snapshot",
+    })).toBe(snapshot);
+  });
+
+  it("does not clear live messages when a snapshot is temporarily empty", () => {
+    const current = [
+      uiMessage("msg_user", "user", "latest prompt"),
+      uiMessage("msg_assistant", "assistant", "latest answer"),
+    ];
+
+    expect(reconcileTranscriptMessages({
+      currentMessages: current,
+      snapshotMessages: [],
+      reason: "snapshot",
+    })).toBe(current);
+  });
+
   it("keeps older cached messages when a busy snapshot only contains the active tail", () => {
-    const merged = mergeSnapshotIntoCachedMessages(
-      [uiMessage("msg_current_user", "user", "latest prompt")],
-      [
+    const merged = reconcileTranscriptMessages({
+      snapshotMessages: [uiMessage("msg_current_user", "user", "latest prompt")],
+      currentMessages: [
         uiMessage("msg_old_user", "user", "old prompt"),
         uiMessage("msg_old_assistant", "assistant", "old answer"),
         uiMessage("msg_current_user", "user", "latest"),
       ],
-    );
+      reason: "snapshot",
+    });
 
     expect(merged.map((message) => message.id)).toEqual([
       "msg_old_user",
@@ -72,6 +96,43 @@ describe("mergeSnapshotIntoCachedMessages", () => {
       "msg_current_user",
     ]);
     expect(merged[2]?.parts[0]).toMatchObject({ text: "latest prompt" });
+  });
+
+  it("keeps snapshot history and live-only tail messages together", () => {
+    const merged = reconcileTranscriptMessages({
+      currentMessages: [
+        uiMessage("msg_current_user", "user", "latest prompt"),
+        uiMessage("msg_current_assistant", "assistant", "streaming answer"),
+      ],
+      snapshotMessages: [
+        uiMessage("msg_old_user", "user", "old prompt"),
+        uiMessage("msg_old_assistant", "assistant", "old answer"),
+      ],
+      reason: "snapshot",
+    });
+
+    expect(merged.map((message) => message.id)).toEqual([
+      "msg_old_user",
+      "msg_old_assistant",
+      "msg_current_user",
+      "msg_current_assistant",
+    ]);
+  });
+
+  it("keeps longer live text when the snapshot lags the event stream", () => {
+    const merged = reconcileTranscriptMessages({
+      currentMessages: [
+        uiMessage("msg_user", "user", "hello"),
+        uiMessage("msg_assistant", "assistant", "finished answer"),
+      ],
+      snapshotMessages: [
+        uiMessage("msg_user", "user", "hello"),
+        uiMessage("msg_assistant", "assistant", "finished"),
+      ],
+      reason: "snapshot",
+    });
+
+    expect(merged[1]?.parts[0]).toMatchObject({ text: "finished answer" });
   });
 });
 
@@ -104,7 +165,7 @@ describe("deriveRenderedSessionMessages", () => {
     })).toBe(cached);
   });
 
-  it("keeps snapshot history visible when the live cache only has the active turn", () => {
+  it("renders the canonical live cache without merging snapshot history", () => {
     const messages = deriveRenderedSessionMessages({
       transcriptState: [
         {
@@ -122,12 +183,27 @@ describe("deriveRenderedSessionMessages", () => {
         { id: "msg_old_user", role: "user", text: "old prompt" },
         { id: "msg_old_assistant", role: "assistant", text: "old answer" },
       ]),
-      includeLiveOnlyMessages: true,
     });
 
     expect(messages.map((message) => message.id)).toEqual([
-      "msg_old_user",
-      "msg_old_assistant",
+      "msg_current_user",
+      "msg_current_assistant",
+    ]);
+  });
+
+  it("keeps live-only tail messages instead of merging a stale snapshot during render", () => {
+    const messages = deriveRenderedSessionMessages({
+      transcriptState: [
+        uiMessage("msg_current_user", "user", "latest prompt"),
+        uiMessage("msg_current_assistant", "assistant", "latest answer"),
+      ],
+      snapshot: snapshotWithMessages([
+        { id: "msg_old_user", role: "user", text: "old prompt" },
+        { id: "msg_old_assistant", role: "assistant", text: "old answer" },
+      ]),
+    });
+
+    expect(messages.map((message) => message.id)).toEqual([
       "msg_current_user",
       "msg_current_assistant",
     ]);

@@ -19,13 +19,6 @@ import { isWithinWorkspaceRootPath, normalizeScopedDirectoryPath } from "./path-
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
-import { registerExtAdapters, createExtBridgeHandlers, isExtChannel, isValidChannel } from "./channels-ext.js";
-
-type SendMeta = {
-  kind?: OutboundKind;
-  model?: string;
-  agent?: string;
-};
 
 type Adapter = {
   key: string;
@@ -34,11 +27,10 @@ type Adapter = {
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: SendMeta }) => Promise<MessageDeliveryResult>;
+  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[] }) => Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendFile?: (peerId: string, filePath: string, caption?: string) => Promise<void>;
   sendTyping?: (peerId: string) => Promise<void>;
-  getBotName?: () => string | null;
 };
 
 type AdapterStartResult =
@@ -82,8 +74,6 @@ type BridgeDeps = {
   adapters?: Map<string, Adapter>;
   disableEventStream?: boolean;
   disableHealthServer?: boolean;
-  /** opencode-router 自身版本，写入 /health 响应供上游对账 */
-  routerVersion?: string;
 };
 
 export type BridgeReporter = {
@@ -158,12 +148,10 @@ const TOOL_LABELS: Record<string, string> = {
 const CHANNEL_LABELS: Record<ChannelName, string> = {
   telegram: "Telegram",
   slack: "Slack",
-  feishu: "Feishu",
-  mattermost: "Mattermost",
 };
 
 const TYPING_INTERVAL_MS = 6000;
-const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".tron/agents/opencode-router.md";
+const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".tron/agents/tron-router.md";
 const OPENCODE_ROUTER_AGENT_MAX_CHARS = 16_000;
 const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
   "Respond for non-technical users first.",
@@ -262,7 +250,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
   const clients = new Map<string, ReturnType<typeof createClient>>();
   const defaultDirectory = config.opencodeDirectory;
   const workspaceRoot = resolve(defaultDirectory || process.cwd());
-  const mediaStore = new MediaStore(join(workspaceRoot, ".tron-router", "media"));
+  const mediaStore = new MediaStore(join(workspaceRoot, ".opencode-router", "media"));
   await mediaStore.ensureReady();
   const workspaceAgentFilePath = join(workspaceRoot, OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH);
   const agentPromptCache = new Map<string, { mtimeMs: number; config: MessagingAgentConfig }>();
@@ -358,19 +346,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const bot = config.telegramBots.find((entry) => entry.id === id);
       return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
     }
-    if (channel === "slack") {
-      const app = config.slackApps.find((entry) => entry.id === id);
-      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
-    }
-    if (channel === "feishu") {
-      const app = config.feishuApps.find((entry) => entry.id === id);
-      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
-    }
-    if (channel === "mattermost") {
-      const bot = config.mattermostBots.find((entry) => entry.id === id);
-      return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
-    }
-    return "";
+    const app = config.slackApps.find((entry) => entry.id === id);
+    return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
   };
 
   const resolveTelegramIdentityAccess = (
@@ -455,9 +432,6 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const base = createSlackAdapter(app, config, logger, handleInbound, undefined, mediaStore);
       adapters.set(key, { ...base, key });
     }
-
-    // Register extended channel adapters (feishu, mattermost).
-    registerExtAdapters(config, adapters, logger, handleInbound, mediaStore);
   }
 
   const keyForSession = (directory: string, sessionID: string) => `${directory}::${sessionID}`;
@@ -663,7 +637,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     parts: OutboundMessagePart[],
-    options: { kind?: OutboundKind; display?: boolean; meta?: { model?: string; agent?: string } } = {},
+    options: { kind?: OutboundKind; display?: boolean } = {},
   ): Promise<MessageDeliveryResult> => {
     const adapter = adapters.get(adapterKey(channel, identityId));
     if (!adapter) {
@@ -696,11 +670,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     if (adapter.sendMessage) {
       try {
-        const sendMeta: SendMeta | undefined =
-          options.kind || options.meta
-            ? { kind, ...(options.meta?.model ? { model: options.meta.model } : {}), ...(options.meta?.agent ? { agent: options.meta.agent } : {}) }
-            : undefined;
-        return await adapter.sendMessage(peerId, { parts, ...(sendMeta ? { meta: sendMeta } : {}) });
+        return await adapter.sendMessage(peerId, { parts });
       } catch (error) {
         const classified = classifyDeliveryError(error);
         return {
@@ -762,7 +732,6 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       config.healthPort,
       (): HealthSnapshot => ({
         ok: opencodeHealthy,
-        version: deps.routerVersion ?? "0.0.0",
         opencode: {
           url: config.opencodeUrl,
           healthy: opencodeHealthy,
@@ -773,8 +742,6 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           // WhatsApp removed; keep field for backward compatibility.
           whatsapp: false,
           slack: Array.from(adapters.keys()).some((key) => key.startsWith("slack:")),
-          feishu: Array.from(adapters.keys()).some((key) => key.startsWith("feishu:")),
-          mattermost: Array.from(adapters.keys()).some((key) => key.startsWith("mattermost:")),
         },
         config: {
           groupsEnabled,
@@ -1252,16 +1219,13 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           return { id, deleted };
         },
 
-        // Extended channel handlers (feishu, mattermost).
-        ...createExtBridgeHandlers(config, adapters, logger, handleInbound, mediaStore, normalizeIdentityId, startAdapterBounded),
-
         listBindings: async (filters?: { channel?: string; identityId?: string }) => {
           const channelRaw = filters?.channel?.trim().toLowerCase();
           const identityIdRaw = filters?.identityId?.trim();
           let channel: ChannelName | undefined;
           if (channelRaw) {
-            if (isValidChannel(channelRaw)) {
-              channel = channelRaw;
+            if (channelRaw === "telegram" || channelRaw === "slack") {
+              channel = channelRaw as ChannelName;
             } else {
               throw new Error("Invalid channel");
             }
@@ -1280,7 +1244,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         setBinding: async (input: { channel: string; identityId?: string; peerId: string; directory: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (!isValidChannel(channel)) {
+          if (channel !== "telegram" && channel !== "slack") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1305,7 +1269,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         clearBinding: async (input: { channel: string; identityId?: string; peerId: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (!isValidChannel(channel)) {
+          if (channel !== "telegram" && channel !== "slack") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1327,7 +1291,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           autoBind?: boolean;
         }) => {
           const channelRaw = input.channel.trim().toLowerCase();
-          if (!isValidChannel(channelRaw)) {
+          if (channelRaw !== "telegram" && channelRaw !== "slack") {
             throw new Error("Invalid channel");
           }
           const channel = channelRaw as ChannelName;
@@ -1675,7 +1639,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     text: string,
-    options: { kind?: OutboundKind; display?: boolean; meta?: { model?: string; agent?: string } } = {},
+    options: { kind?: OutboundKind; display?: boolean } = {},
   ) {
     const parts: OutboundMessagePart[] =
       text.startsWith("FILE:") && text.substring(5).trim()
@@ -1938,14 +1902,14 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           .join("\n\n");
         const attachmentSummary = summarizeInboundPartsForPrompt(inbound.parts);
         const incomingText = inbound.text || "(no text; user sent media)";
-        const systemText = [
+        const promptText = [
           "You are handling a Slack/Telegram message via OpenWork.",
           `Workspace agent file: ${messagingAgent.filePath}`,
           ...(messagingAgent.selectedAgent ? [`Selected OpenCode agent: ${messagingAgent.selectedAgent}`] : []),
           "Follow these workspace messaging instructions:",
           effectiveInstructions,
-        ].join("\n");
-        const userText = [
+          "",
+          "Incoming user message:",
           incomingText,
           ...(attachmentSummary.length ? ["", "Incoming attachments:", ...attachmentSummary] : []),
         ].join("\n");
@@ -1986,8 +1950,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         const runPrompt = async (): Promise<PromptPart[]> => {
           const response = await getClient(boundDirectory).session.prompt({
             sessionID,
-            system: systemText,
-            parts: [{ type: "text", text: userText }],
+            parts: [{ type: "text", text: promptText }],
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(messagingAgent.selectedAgent ? { agent: messagingAgent.selectedAgent } : {}),
           });
@@ -2007,20 +1970,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
         if (reply) {
           logger.debug({ sessionID, replyLength: reply.length }, "reply built");
-          const trackedModel = sessionModels.get(key);
-          const modelLabel = effectiveModel
-            ? `${effectiveModel.providerID}/${effectiveModel.modelID}`
-            : trackedModel
-              ? `${trackedModel.providerID}/${trackedModel.modelID}`
-              : null;
-          const replyMeta = {
-            ...(modelLabel ? { model: modelLabel } : {}),
-            ...(messagingAgent.selectedAgent ? { agent: messagingAgent.selectedAgent } : {}),
-          };
-          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, {
-            kind: "reply",
-            ...(replyMeta.model || replyMeta.agent ? { meta: replyMeta } : {}),
-          });
+          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
         } else {
           logger.warn(
             { sessionID, partTypes: parts.map((part) => part.type), ignoredCount: parts.filter((part) => part.ignored).length },
@@ -2188,7 +2138,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     // /help command
     if (command === "help") {
-      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
+      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private Telegram bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
       await sendText(channel, identityId, peerId, helpText, { kind: "system" });
       return true;
     }
@@ -2204,11 +2154,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     peerKey: string;
     directory: string;
   }): Promise<string> {
-    const adapter = adapters.get(adapterKey(input.channel, input.identityId));
-    const botName = adapter?.getBotName?.() ?? null;
-    const title = botName
-      ? `${botName} · ${input.peerId}`
-      : `opencode-router ${input.channel}/${input.identityId} ${input.peerId}`;
+    const title = `${input.channel}/${input.identityId} ${input.peerId}`;
     const session = await getClient(input.directory).session.create({
       title,
       permission: buildPermissionRules(config.permissionMode),

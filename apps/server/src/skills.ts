@@ -57,10 +57,8 @@ async function parseSkillEntry(
 ): Promise<SkillItem | null> {
   const content = await readFile(skillPath, "utf8");
   const { data, body } = parseFrontmatter(content);
-  // 始终以目录名作为 skill name（确保与文件系统路径一致，避免删除时路径不匹配）
-  const name = entryName;
+  const name = typeof data.name === "string" ? data.name : entryName;
   const description = typeof data.description === "string" ? data.description : "";
-  const description_zh = typeof data.description_zh === "string" ? data.description_zh : undefined;
   const trigger =
     typeof data.trigger === "string"
       ? data.trigger
@@ -73,10 +71,10 @@ async function parseSkillEntry(
   } catch {
     return null;
   }
+  if (name !== entryName) return null;
   return {
     name,
     description,
-    ...(description_zh ? { description_zh } : {}),
     path: skillPath,
     scope,
     trigger: trigger.trim() || undefined,
@@ -122,18 +120,22 @@ export async function listSkills(workspaceRoot: string, includeGlobal: boolean):
   const roots = await findWorkspaceRoots(workspaceRoot);
   const items: SkillItem[] = [];
   for (const root of roots) {
-    const opencodeDir = join(root, ".tron", "skills");
+    const opencodeDir = join(root, ".opencode", "skills");
+    const tronDir = join(root, ".tron", "skills");
     const claudeDir = join(root, ".claude", "skills");
     items.push(...(await listSkillsInDir(opencodeDir, "project")));
     items.push(...(await listSkillsInDir(claudeDir, "project")));
+    items.push(...(await listSkillsInDir(tronDir, "project")));
   }
 
   if (includeGlobal) {
     const globalOpenWork = join(homedir(), ".config", "opencode", "skills");
+    const globalTron = join(homedir(), ".config", "tron", "skills");
     const globalClaude = join(homedir(), ".claude", "skills");
     const globalAgents = join(homedir(), ".agents", "skills");
     const globalAgentLegacy = join(homedir(), ".agent", "skills");
     items.push(...(await listSkillsInDir(globalOpenWork, "global")));
+    items.push(...(await listSkillsInDir(globalTron, "global")));
     items.push(...(await listSkillsInDir(globalClaude, "global")));
     items.push(...(await listSkillsInDir(globalAgents, "global")));
     items.push(...(await listSkillsInDir(globalAgentLegacy, "global")));

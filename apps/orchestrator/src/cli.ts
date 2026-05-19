@@ -656,15 +656,15 @@ async function resolveHostOpencodeGlobalConfigDir(): Promise<string | null> {
 
   const candidates: string[] = [];
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  if (xdg) candidates.push(join(xdg, "tron"));
-  candidates.push(join(homedir(), ".config", "tron"));
+  if (xdg) candidates.push(join(xdg, "opencode"));
+  candidates.push(join(homedir(), ".config", "opencode"));
   if (process.platform === "darwin") {
     candidates.push(
-      join(homedir(), "Library", "Application Support", "tron"),
+      join(homedir(), "Library", "Application Support", "opencode"),
     );
   }
 
-  const files = ["tron.jsonc", "tron.json", "config.json", "AGENTS.md"];
+  const files = ["opencode.jsonc", "opencode.json", "config.json", "AGENTS.md"];
   for (const candidate of Array.from(
     new Set(candidates.map((item) => resolve(expandTildePath(item)))),
   )) {
@@ -1106,26 +1106,18 @@ async function ensureWorkspace(workspace: string): Promise<string> {
   const resolved = resolve(workspace);
   await mkdir(resolved, { recursive: true });
 
-  // 检查 .tron/ 和根目录（向后兼容）是否已有配置
-  const tronDir = join(resolved, ".tron");
-  const tronDirJsonc = join(tronDir, "tron.jsonc");
-  const tronDirJson = join(tronDir, "tron.json");
-  const rootJsonc = join(resolved, "tron.jsonc");
-  const rootJson = join(resolved, "tron.json");
-  const hasConfig =
-    await fileExists(tronDirJsonc) ||
-    await fileExists(tronDirJson) ||
-    await fileExists(rootJsonc) ||
-    await fileExists(rootJson);
+  const configPathJsonc = join(resolved, "opencode.jsonc");
+  const configPathJson = join(resolved, "opencode.json");
+  const hasJsonc = await fileExists(configPathJsonc);
+  const hasJson = await fileExists(configPathJson);
 
-  if (!hasConfig) {
-    await mkdir(tronDir, { recursive: true });
+  if (!hasJsonc && !hasJson) {
     const payload = JSON.stringify(
-      { $schema: "https://troncode.cn/config.json" },
+      { $schema: "https://opencode.ai/config.json" },
       null,
       2,
     );
-    await writeFile(tronDirJsonc, `${payload}\n`, "utf8");
+    await writeFile(configPathJsonc, `${payload}\n`, "utf8");
   }
 
   return resolved;
@@ -1892,8 +1884,8 @@ function addEnvPassThroughArgs(args: string[], names: string[]) {
 const SANDBOX_INTERNAL_ENV_NAMES = [
   "OPENWORK_TOKEN",
   "OPENWORK_HOST_TOKEN",
-  "TRON_SERVER_USERNAME",
-  "TRON_SERVER_PASSWORD",
+  "OPENCODE_SERVER_USERNAME",
+  "OPENCODE_SERVER_PASSWORD",
   "OPENWORK_OPENCODE_USERNAME",
   "OPENWORK_OPENCODE_PASSWORD",
 ] as const;
@@ -2854,11 +2846,11 @@ function resolveRouterDataDir(flags: Map<string, string | boolean>): string {
   if (override && override.trim()) {
     return resolve(override.trim());
   }
-  return join(homedir(), ".openwork", "openwork-orchestrator");
+  return join(homedir(), ".wudong", "openwork-orchestrator");
 }
 
 function resolveWorkspaceOpenworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".tron", "wudong.json");
+  return join(workspaceRoot, ".tron", "tron.json");
 }
 
 function resolveOpencodeRouterConfigPath(): string {
@@ -2866,9 +2858,9 @@ function resolveOpencodeRouterConfigPath(): string {
   if (override) return resolve(override.replace(/^~\//, `${homedir()}/`));
   const dataDir =
     process.env.OPENCODE_ROUTER_DATA_DIR?.trim() ||
-    join(homedir(), ".openwork", "opencode-router");
+    join(homedir(), ".wudong", "tron-router");
   const expanded = dataDir.replace(/^~\//, `${homedir()}/`);
-  return join(resolve(expanded), "opencode-router.json");
+  return join(resolve(expanded), "tron-router.json");
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -2961,11 +2953,14 @@ async function resolveOpencodeRouterEnabled(
     return { enabled: configured, source: "workspace-config" };
   }
 
-  // Default messaging-enabled to true for new workspaces (brand requirement).
-  // Previously this was false and only flipped on when the router config
-  // already had a bot token configured; now messaging is on by default even
-  // for a bare router config.
-  const inferredEnabled = true;
+  let inferredEnabled = false;
+  const routerConfigPath = resolveOpencodeRouterConfigPath();
+  try {
+    const raw = await readFile(routerConfigPath, "utf8");
+    inferredEnabled = hasConfiguredMessagingServices(asRecord(JSON.parse(raw)));
+  } catch {
+    inferredEnabled = false;
+  }
 
   const nextOpenworkConfig: Record<string, unknown> = {
     ...openworkConfig,
@@ -3025,7 +3020,7 @@ function resolveOpencodeStateLayout(options: {
   const xdgDataHome = join(rootDir, "xdg", "data");
   const xdgCacheHome = join(rootDir, "xdg", "cache");
   const xdgStateHome = join(rootDir, "xdg", "state");
-  const configDir = join(rootDir, "config", "tron");
+  const configDir = join(rootDir, "config", "opencode");
 
   return {
     devMode: true,
@@ -3037,13 +3032,13 @@ function resolveOpencodeStateLayout(options: {
       process.env.OPENWORK_DEV_OPENCODE_IMPORT_DATA_DIR?.trim() || undefined,
     env: {
       OPENWORK_DEV_MODE: "1",
-      TRON_TEST_HOME: homeDir,
+      OPENCODE_TEST_HOME: homeDir,
       HOME: homeDir,
       XDG_CONFIG_HOME: xdgConfigHome,
       XDG_DATA_HOME: xdgDataHome,
       XDG_CACHE_HOME: xdgCacheHome,
       XDG_STATE_HOME: xdgStateHome,
-      TRON_CONFIG_DIR: configDir,
+      OPENCODE_CONFIG_DIR: configDir,
     },
   };
 }
@@ -3060,7 +3055,7 @@ async function ensureOpencodeStateLayout(
   const xdgCacheHome = layout.env.XDG_CACHE_HOME;
   const xdgStateHome = layout.env.XDG_STATE_HOME;
   const opencodeDataDir = xdgDataHome
-    ? join(xdgDataHome, "tron")
+    ? join(xdgDataHome, "opencode")
     : undefined;
 
   for (const dir of [
@@ -3191,10 +3186,10 @@ function opencodeRouterSendToolSource(): string {
     "}",
     "",
     "export default tool({",
-    '  description: "Send a message via opencodeRouter (Telegram/Slack/Feishu/Mattermost) to a peer or directory bindings.",',
+    '  description: "Send a message via opencodeRouter (Telegram/Slack) to a peer or directory bindings.",',
     "  args: {",
     '    text: tool.schema.string().describe("Message text to send"),',
-    '    channel: tool.schema.enum(["telegram", "slack", "feishu", "mattermost"]).optional().describe("Channel to send on (default: telegram)"),',
+    '    channel: tool.schema.enum(["telegram", "slack"]).optional().describe("Channel to send on (default: telegram)"),',
     '    identityId: tool.schema.string().optional().describe("OpenCodeRouter identity id (default: all identities)"),',
     '    directory: tool.schema.string().optional().describe("Directory to target for fan-out (default: current session directory)"),',
     '    peerId: tool.schema.string().optional().describe("Direct destination peer id (chat/thread id)"),',
@@ -3207,8 +3202,8 @@ function opencodeRouterSendToolSource(): string {
     "      throw new Error(`Invalid OPENCODE_ROUTER_HEALTH_PORT: ${rawPort}`)",
     "    }",
     '    const channel = (args.channel || "telegram").trim()',
-    '    if (channel !== "telegram" && channel !== "slack" && channel !== "feishu" && channel !== "mattermost") {',
-    '      throw new Error("channel must be telegram, slack, feishu, or mattermost")',
+    '    if (channel !== "telegram" && channel !== "slack") {',
+    '      throw new Error("channel must be telegram or slack")',
     "    }",
     '    const text = String(args.text || "")',
     '    if (!text.trim()) throw new Error("text is required")',
@@ -3281,7 +3276,7 @@ function opencodeRouterStatusToolSource(): string {
     "export default tool({",
     '  description: "Check opencodeRouter messaging readiness (health, identities, bindings).",',
     "  args: {",
-    '    channel: tool.schema.enum(["telegram", "slack", "feishu", "mattermost"]).optional().describe("Channel to inspect (default: telegram)"),',
+    '    channel: tool.schema.enum(["telegram", "slack"]).optional().describe("Channel to inspect (default: telegram)"),',
     '    identityId: tool.schema.string().optional().describe("Identity id to scope checks"),',
     '    directory: tool.schema.string().optional().describe("Directory to inspect bindings for (default: current session directory)"),',
     '    peerId: tool.schema.string().optional().describe("Peer id to inspect bindings for"),',
@@ -3294,8 +3289,8 @@ function opencodeRouterStatusToolSource(): string {
     "      throw new Error(`Invalid OPENCODE_ROUTER_HEALTH_PORT: ${rawPort}`)",
     "    }",
     '    const channel = (args.channel || "telegram").trim()',
-    '    if (channel !== "telegram" && channel !== "slack" && channel !== "feishu" && channel !== "mattermost") {',
-    '      throw new Error("channel must be telegram, slack, feishu, or mattermost")',
+    '    if (channel !== "telegram" && channel !== "slack") {',
+    '      throw new Error("channel must be telegram or slack")',
     "    }",
     '    const identityId = String(args.identityId || "").trim()',
     '    const directory = (args.directory || context.directory || "").trim()',
@@ -3375,7 +3370,7 @@ function opencodeRouterStatusToolSource(): string {
     "        ? 'Ready for directory fan-out send'",
     "        : channel === 'telegram'",
     "          ? 'No linked Telegram conversations yet. Ask the recipient to message your bot (for example /start), then retry.'",
-    "          : `No linked ${channel} conversations found for this directory yet. Ask the recipient to message your bot first.`",
+    "          : 'No linked conversations found for this directory yet'",
     "      nextAction = ready ? 'send_directory' : channel === 'telegram' ? 'wait_for_recipient_start' : 'link_conversation'",
     "    } else {",
     "      ready = true",
@@ -3835,14 +3830,17 @@ async function startOpencode(options: {
         process.env.OTEL_RESOURCE_ATTRIBUTES,
       ),
       ...(options.username
-        ? { TRON_SERVER_USERNAME: options.username }
+        ? { OPENCODE_SERVER_USERNAME: options.username }
         : {}),
       ...(options.password
-        ? { TRON_SERVER_PASSWORD: options.password }
+        ? { OPENCODE_SERVER_PASSWORD: options.password }
         : {}),
       ...(options.stateLayout?.configDir
-        ? { TRON_CONFIG_DIR: options.stateLayout.configDir }
+        ? { OPENCODE_CONFIG_DIR: options.stateLayout.configDir }
         : {}),
+      OPENCODE_HOT_RELOAD: options.hotReload.enabled ? "1" : "0",
+      OPENCODE_HOT_RELOAD_DEBOUNCE_MS: String(options.hotReload.debounceMs),
+      OPENCODE_HOT_RELOAD_COOLDOWN_MS: String(options.hotReload.cooldownMs),
       ...(options.opencodeRouterHealthPort
         ? {
             OPENCODE_ROUTER_HEALTH_PORT: String(
@@ -4045,8 +4043,6 @@ async function startOpenCodeRouter(options: {
         ...(options.opencodeRouterDataDir
           ? { OPENCODE_ROUTER_DATA_DIR: options.opencodeRouterDataDir }
           : {}),
-        // opencode-router 是 opencode 的 client，它二进制里硬编码读 OPENCODE_SERVER_*
-        // 不能改成 TRON_*，否则 router 拿不到 tron 的鉴权信息
         ...(options.opencodeUsername
           ? { OPENCODE_SERVER_USERNAME: options.opencodeUsername }
           : {}),
@@ -4306,10 +4302,10 @@ async function writeSandboxEntrypoint(options: {
     ': "${OPENWORK_TOKEN:?OPENWORK_TOKEN is required}"',
     ': "${OPENWORK_HOST_TOKEN:?OPENWORK_HOST_TOKEN is required}"',
     options.opencode.username
-      ? ': "${TRON_SERVER_USERNAME:?TRON_SERVER_USERNAME is required}"'
+      ? ': "${OPENCODE_SERVER_USERNAME:?OPENCODE_SERVER_USERNAME is required}"'
       : "",
     options.opencode.password
-      ? ': "${TRON_SERVER_PASSWORD:?TRON_SERVER_PASSWORD is required}"'
+      ? ': "${OPENCODE_SERVER_PASSWORD:?OPENCODE_SERVER_PASSWORD is required}"'
       : "",
     options.openwork.opencodeUsername
       ? ': "${OPENWORK_OPENCODE_USERNAME:?OPENWORK_OPENCODE_USERNAME is required}"'
@@ -4325,12 +4321,12 @@ async function writeSandboxEntrypoint(options: {
     ? `export OPENCODE_ROUTER_HEALTH_PORT=${shQuote(String(SANDBOX_INTERNAL_OPENCODE_ROUTER_HEALTH_PORT))}`
     : "";
   const openworkDevMode = (process.env.OPENWORK_DEV_MODE ?? "").trim() === "1";
-  const sandboxHomeDir = openworkDevMode ? "/persist/openwork-dev-data/home" : "/persist";
+  const sandboxHomeDir = openworkDevMode ? "/persist/wudong-dev-data/home" : "/persist";
 
   const script = [
     "set -eu",
     `export HOME=${shQuote(sandboxHomeDir)}`,
-    `export TRON_TEST_HOME=${shQuote(sandboxHomeDir)}`,
+    `export OPENCODE_TEST_HOME=${shQuote(sandboxHomeDir)}`,
     'export XDG_CONFIG_HOME="$HOME/.config"',
     'export XDG_CACHE_HOME="$HOME/.cache"',
     'export XDG_DATA_HOME="$HOME/.local/share"',
@@ -4341,7 +4337,7 @@ async function writeSandboxEntrypoint(options: {
     // from cwd, and user workspaces may include preloads that break startup.
     `cd ${shQuote("/persist")}`,
     `export OPENCODE_DIRECTORY=${shQuote(workspaceDir)}`,
-    `export TRON_CONFIG_DIR=${shQuote(opencodeConfigDir)}`,
+    `export OPENCODE_CONFIG_DIR=${shQuote(opencodeConfigDir)}`,
     `mkdir -p ${shQuote(opencodeConfigDir)}`,
     `if [ -d ${shQuote(hostOpencodeConfigDir)} ]; then cp -R ${shQuote(`${hostOpencodeConfigDir}/.`)} ${shQuote(opencodeConfigDir)} 2>/dev/null || true; fi`,
     'mkdir -p "$XDG_DATA_HOME/opencode"',
@@ -4543,10 +4539,10 @@ async function startDockerSandbox(options: {
       OPENWORK_TOKEN: options.openwork.token,
       OPENWORK_HOST_TOKEN: options.openwork.hostToken,
       ...(options.opencode.username
-        ? { TRON_SERVER_USERNAME: options.opencode.username }
+        ? { OPENCODE_SERVER_USERNAME: options.opencode.username }
         : {}),
       ...(options.opencode.password
-        ? { TRON_SERVER_PASSWORD: options.opencode.password }
+        ? { OPENCODE_SERVER_PASSWORD: options.opencode.password }
         : {}),
       ...(options.openwork.opencodeUsername
         ? { OPENWORK_OPENCODE_USERNAME: options.openwork.opencodeUsername }
@@ -4725,10 +4721,10 @@ async function startAppleContainerSandbox(options: {
       OPENWORK_TOKEN: options.openwork.token,
       OPENWORK_HOST_TOKEN: options.openwork.hostToken,
       ...(options.opencode.username
-        ? { TRON_SERVER_USERNAME: options.opencode.username }
+        ? { OPENCODE_SERVER_USERNAME: options.opencode.username }
         : {}),
       ...(options.opencode.password
-        ? { TRON_SERVER_PASSWORD: options.opencode.password }
+        ? { OPENCODE_SERVER_PASSWORD: options.opencode.password }
         : {}),
       ...(options.openwork.opencodeUsername
         ? { OPENWORK_OPENCODE_USERNAME: options.openwork.opencodeUsername }
@@ -5549,12 +5545,12 @@ function buildAttachCommand(input: {
 }): string {
   const parts: string[] = [];
   if (input.username && input.password) {
-    parts.push(`TRON_SERVER_USERNAME=${input.username}`);
+    parts.push(`OPENCODE_SERVER_USERNAME=${input.username}`);
   }
   if (input.password) {
-    parts.push(`TRON_SERVER_PASSWORD=${input.password}`);
+    parts.push(`OPENCODE_SERVER_PASSWORD=${input.password}`);
   }
-  parts.push("tron", "attach", input.url, "--dir", input.workspace);
+  parts.push("opencode", "attach", input.url, "--dir", input.workspace);
   return parts.join(" ");
 }
 
@@ -6000,9 +5996,7 @@ async function runRouterDaemon(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  // ensureOpencodeManagedTools 已禁用：它生成的 ts 工具依赖 @opencode-ai/plugin@<tron-version>，
-  // 而 tron 0.2.1 没有发布对应版本的 plugin 包，导致 session.prompt 在 resolveTools 阶段失败
-  // await ensureOpencodeManagedTools(opencodeConfigDir);
+  await ensureOpencodeManagedTools(opencodeConfigDir);
   logger.info(
     "Daemon starting",
     { runId, logFormat, workdir: resolvedWorkdir, host, port },
@@ -6790,8 +6784,12 @@ async function runStatus(args: ParsedArgs) {
     readFlag(args.flags, "openwork-url") ?? process.env.OPENWORK_URL ?? "";
   const opencodeUrl =
     readFlag(args.flags, "opencode-url") ?? process.env.OPENCODE_URL ?? "";
-  const username = readFlag(args.flags, "opencode-username");
-  const password = readFlag(args.flags, "opencode-password");
+  const username =
+    readFlag(args.flags, "opencode-username") ??
+    process.env.OPENCODE_SERVER_USERNAME;
+  const password =
+    readFlag(args.flags, "opencode-password") ??
+    process.env.OPENCODE_SERVER_PASSWORD;
   const outputJson = readBool(args.flags, "json", false);
 
   const status: Record<string, unknown> = {};
@@ -6986,9 +6984,7 @@ async function runStart(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  // ensureOpencodeManagedTools 已禁用：它生成的 ts 工具依赖 @opencode-ai/plugin@<tron-version>，
-  // 而 tron 0.2.1 没有发布对应版本的 plugin 包，导致 session.prompt 在 resolveTools 阶段失败
-  // await ensureOpencodeManagedTools(opencodeConfigDir);
+  await ensureOpencodeManagedTools(opencodeConfigDir);
   const opencodeRouterDataDir =
     sandboxMode === "none"
       ? join(dataDir, "opencode-router", workspaceIdForLocal(resolvedWorkspace))
@@ -7283,8 +7279,8 @@ async function runStart(args: ParsedArgs) {
     ...process.env,
     OPENCODE_DIRECTORY: resolvedWorkspace,
     OPENCODE_URL: opencodeConnectUrl,
-    ...(opencodeUsername ? { TRON_SERVER_USERNAME: opencodeUsername } : {}),
-    ...(opencodePassword ? { TRON_SERVER_PASSWORD: opencodePassword } : {}),
+    ...(opencodeUsername ? { OPENCODE_SERVER_USERNAME: opencodeUsername } : {}),
+    ...(opencodePassword ? { OPENCODE_SERVER_PASSWORD: opencodePassword } : {}),
     ...(opencodeRouterEnabled
       ? { OPENCODE_ROUTER_HEALTH_PORT: String(opencodeRouterHealthPort) }
       : {}),

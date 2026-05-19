@@ -96,6 +96,7 @@ export interface ServerConfig {
 export interface Capabilities {
   schemaVersion: number;
   serverVersion: string;
+  opencodeVersion: string;
   skills: { read: boolean; write: boolean; source: "openwork" | "opencode" };
   hub: {
     skills: {
@@ -168,15 +169,12 @@ export interface McpItem {
   config: Record<string, unknown>;
   source: "config.project" | "config.global" | "config.remote";
   disabledByTools?: boolean;
-  status?: "connected" | "disabled" | "failed" | "needs_auth" | "needs_client_registration";
-  statusError?: string;
 }
 
 export interface SkillItem {
   name: string;
   path: string;
   description: string;
-  description_zh?: string;
   scope: "project" | "global";
   trigger?: string;
 }

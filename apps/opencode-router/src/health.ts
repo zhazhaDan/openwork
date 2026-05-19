@@ -3,15 +3,9 @@ import http from "node:http";
 import type { Logger } from "pino";
 
 import type { OutboundMessagePart, PartDeliveryResult } from "./media.js";
-import { handleExtChannelRoute, type ExtHealthHandlers } from "./channels-ext.js";
 
 export type HealthSnapshot = {
   ok: boolean;
-  /**
-   * opencode-router 自身版本（来自 package.json / build-time __OPENCODE_ROUTER_VERSION__）。
-   * 上游消费方可据此跟分发的二进制版本对账，防止接口漂移。
-   */
-  version: string;
   opencode: {
     url: string;
     healthy: boolean;
@@ -21,8 +15,6 @@ export type HealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
-    feishu: boolean;
-    mattermost: boolean;
   };
   config: {
     groupsEnabled: boolean;
@@ -144,7 +136,7 @@ export type SendMessageResult = {
   reason?: string;
 };
 
-export type HealthHandlers = ExtHealthHandlers & {
+export type HealthHandlers = {
   setGroupsEnabled?: (enabled: boolean) => Promise<GroupsConfigResult>;
   getGroupsEnabled?: () => boolean;
   listTelegramIdentities?: () => Promise<TelegramIdentitiesResult>;
@@ -658,9 +650,6 @@ export async function startHealthServer(
           return;
         }
       }
-
-      // Extended channel routes (feishu, mattermost).
-      if (await handleExtChannelRoute(pathname, req.method ?? "", req, res, handlers)) return;
 
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Not found" }));

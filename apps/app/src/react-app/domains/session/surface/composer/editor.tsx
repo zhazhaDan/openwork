@@ -357,11 +357,12 @@ function setPrompt(value: string, mentions: Record<string, "agent" | "file">, pa
   }
 
   const segments = value.split(/(\[pasted text [^\]]+\]|@[^\s@]+)/);
+  const pastedTextByLabel = new Map((pastedText ?? []).map((item) => [item.label, item]));
   for (const segment of segments) {
     if (!segment) continue;
     const pasteMatch = segment.match(/^\[pasted text (.+)\]$/);
     if (pasteMatch?.[1]) {
-      const target = pastedText?.find((item) => item.label === pasteMatch[1]);
+      const target = pastedTextByLabel.get(pasteMatch[1]);
       if (target) {
         paragraph.append($createComposerPastedTextNode(target.label, target.lines));
         continue;
@@ -414,10 +415,30 @@ function SyncPlugin(props: { value: string; mentions: Record<string, "agent" | "
     const forceRebuild = !props.value.trim() && currentText.trim() !== "";
     if (!forceRebuild && valueRef.current === props.value) return;
     valueRef.current = props.value;
+    // Check whether the editor already reflects the desired state BEFORE
+    // entering editor.update(). Even a bail-out inside editor.update()
+    // triggers Lexical's reconciliation cycle which can normalise the DOM
+    // selection and reset the cursor (e.g. after a multi-line paste the
+    // cursor jumps to position 0 instead of staying after the pasted
+    // content). The read() above already gave us `currentText` — reuse it.
+    if (!forceRebuild && currentText === props.value) return;
     editor.update(() => {
+      // Double-check inside the update in case another queued update
+      // changed the state between the read above and this callback.
       if (!forceRebuild && serializePromptFromRoot() === props.value) return;
       setPrompt(props.value, props.mentions, props.pastedText);
-      $getRoot().selectEnd();
+      // $getRoot().selectEnd() doesn't work when the last node is a
+      // token (chip) — Lexical can't position a cursor inside a token,
+      // so the selection collapses to position 0. Use element-level
+      // selection instead: place the cursor *after* the last child of
+      // the last paragraph.
+      const lastParagraph = $getRoot().getLastChild();
+      if ($isElementNode(lastParagraph)) {
+        const childCount = lastParagraph.getChildrenSize();
+        lastParagraph.select(childCount, childCount);
+      } else {
+        $getRoot().selectEnd();
+      }
     });
   }, [editor, props.mentions, props.pastedText, props.value]);
 
@@ -640,7 +661,7 @@ export function LexicalPromptEditor(props: EditorProps) {
     [],
   );
 
-  const handleChange = useCallback(
+  const syncPromptFromEditorState = useCallback(
     (state: Parameters<NonNullable<React.ComponentProps<typeof OnChangePlugin>["onChange"]>>[0]) => {
       state.read(() => {
         const next = serializePromptFromRoot();
@@ -680,7 +701,7 @@ export function LexicalPromptEditor(props: EditorProps) {
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
-        <OnChangePlugin onChange={handleChange} />
+        <OnChangePlugin onChange={syncPromptFromEditorState} />
         <HistoryPlugin />
         <SyncPlugin value={props.value} mentions={props.mentions} pastedText={props.pastedText} disabled={props.disabled} />
         <SubmitPlugin onSubmit={props.onSubmit} disabled={props.disabled} />

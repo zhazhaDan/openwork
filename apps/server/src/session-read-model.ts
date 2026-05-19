@@ -80,23 +80,6 @@ const sessionSnapshotSchema = z.object({
   messages: sessionMessagesSchema,
   todos: sessionTodosSchema,
   status: sessionStatusSchema,
-  question: z
-    .object({
-      id: z.string(),
-      sessionID: z.string(),
-      questions: z.array(
-        z.object({
-          question: z.string(),
-          header: z.string(),
-          options: z.array(z.object({ description: z.string() })),
-          multiple: z.boolean().optional(),
-          custom: z.boolean().optional(),
-        }),
-      ),
-      tool: z.object({ messageID: z.string(), callID: z.string() }).optional(),
-    })
-    .nullable()
-    .optional(),
 });
 
 export type SessionInfoReadModel = z.infer<typeof sessionInfoSchema>;
@@ -140,7 +123,6 @@ export function buildSessionSnapshot(input: {
   messages: unknown;
   todos: unknown;
   statuses: unknown;
-  question?: unknown;
 }): SessionSnapshotReadModel {
   const session = buildSession(input.session);
   const messages = buildSessionMessages(input.messages);
@@ -153,7 +135,6 @@ export function buildSessionSnapshot(input: {
       messages,
       todos,
       status: statuses[session.id] ?? IDLE_STATUS,
-      question: input.question ?? null,
     },
     "session snapshot",
   );

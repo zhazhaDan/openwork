@@ -7,7 +7,7 @@ import { normalizeEvent } from "../../../../app/utils";
 import type { OpencodeEvent, PendingPermission } from "../../../../app/types";
 import { snapshotToUIMessages } from "./usechat-adapter";
 import type { OpenworkSessionSnapshot } from "../../../../app/lib/openwork-server";
-import { mergeSnapshotIntoCachedMessages } from "./message-merge";
+import { reconcileTranscriptMessages } from "./transcript-reconcile";
 
 type SyncOptions = {
   workspaceId: string;
@@ -15,7 +15,7 @@ type SyncOptions = {
   openworkToken: string;
 };
 
-type PendingDelta = {
+export type PendingDelta = {
   sessionId: string;
   messageId: string;
   partId: string;
@@ -24,9 +24,12 @@ type PendingDelta = {
 };
 
 type SyncEntry = {
+  input: SyncOptions;
   refs: number;
   dispose: () => void;
+  disposeTimer: ReturnType<typeof setTimeout> | null;
   trackedSessionRefs: Map<string, number>;
+  retainedSessionTimers: Map<string, ReturnType<typeof setTimeout>>;
   pendingDeltas: Map<string, { messageId: string; reasoning: boolean; text: string }>;
   // Coalesce rapid-fire delta events from the SSE stream into one cache
   // commit per animation frame. Without this, a long response produces a
@@ -39,6 +42,8 @@ type SyncEntry = {
 
 const idleStatus: SessionStatus = { type: "idle" };
 const syncs = new Map<string, SyncEntry>();
+const retainedSessionTtlMs = 10 * 60_000;
+const idleRetainedSessionTtlMs = 10_000;
 
 export const transcriptKey = (workspaceId: string, sessionId: string) =>
   ["react-session-transcript", workspaceId, sessionId] as const;
@@ -70,7 +75,51 @@ function shouldRetrySyncSubscribe(error: unknown) {
 }
 
 function isTrackedSession(entry: SyncEntry, sessionId: string) {
-  return (entry.trackedSessionRefs.get(sessionId) ?? 0) > 0;
+  return (entry.trackedSessionRefs.get(sessionId) ?? 0) > 0 || entry.retainedSessionTimers.has(sessionId);
+}
+
+function isLiveStatus(status: SessionStatus | null | undefined) {
+  return status?.type === "busy" || status?.type === "retry";
+}
+
+function clearTrackedSession(input: SyncOptions, entry: SyncEntry, sessionId: string) {
+  entry.trackedSessionRefs.delete(sessionId);
+  const retainedTimer = entry.retainedSessionTimers.get(sessionId);
+  if (retainedTimer) clearTimeout(retainedTimer);
+  entry.retainedSessionTimers.delete(sessionId);
+  entry.deltaFlushBuffer = entry.deltaFlushBuffer.filter(
+    (item) => item.sessionId !== sessionId,
+  );
+  const queryClient = getReactQueryClient();
+  queryClient.removeQueries({ queryKey: permissionKey(input.workspaceId, sessionId), exact: true });
+  if (entry.refs <= 0 && entry.retainedSessionTimers.size === 0) {
+    disposeWorkspaceSync(syncKey(input), entry);
+  }
+}
+
+function retainSession(input: SyncOptions, entry: SyncEntry, sessionId: string, ttlMs = retainedSessionTtlMs) {
+  const existing = entry.retainedSessionTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  entry.retainedSessionTimers.set(sessionId, setTimeout(() => {
+    clearTrackedSession(input, entry, sessionId);
+  }, ttlMs));
+}
+
+function disposeWorkspaceSync(key: string, entry: SyncEntry) {
+  if (entry.refs > 0) return;
+  if (entry.disposeTimer) {
+    clearTimeout(entry.disposeTimer);
+    entry.disposeTimer = null;
+  }
+  for (const timer of entry.retainedSessionTimers.values()) clearTimeout(timer);
+  entry.retainedSessionTimers.clear();
+  entry.dispose();
+  if (syncs.get(key) === entry) syncs.delete(key);
+}
+
+function releaseRetainedSessionSoon(input: SyncOptions, entry: SyncEntry, sessionId: string) {
+  if (!entry.retainedSessionTimers.has(sessionId)) return;
+  retainSession(input, entry, sessionId, idleRetainedSessionTtlMs);
 }
 
 function withReceivedAt(permission: PermissionRequest, receivedAt: number): PendingPermission {
@@ -91,9 +140,9 @@ export function seedPermissionState(
   const now = Date.now();
   queryClient.setQueryData<PendingPermission[]>(permissionKey(workspaceId, sessionId), (current = []) => {
     const receivedAtById = new Map(current.map((permission) => [permission.id, permission.receivedAt]));
-    const seeded = permissions
-      .filter((permission) => permission.sessionID === sessionId)
-      .map((permission) => withReceivedAt(permission, receivedAtById.get(permission.id) ?? now));
+    const seeded = permissions.flatMap((permission) =>
+      permission.sessionID === sessionId ? [withReceivedAt(permission, receivedAtById.get(permission.id) ?? now)] : [],
+    );
     const seededIds = new Set(seeded.map((permission) => permission.id));
     const snapshotStartedAt = options.snapshotStartedAt;
     const liveAfterSnapshot =
@@ -302,14 +351,37 @@ function appendDelta(messages: UIMessage[], messageId: string, partId: string, d
   return nextMessages;
 }
 
+export function coalescePendingDeltas(items: PendingDelta[]) {
+  if (items.length < 2) return items;
+
+  const ordered: PendingDelta[] = [];
+  const byKey = new Map<string, PendingDelta>();
+  for (const item of items) {
+    const key = `${item.sessionId}\u0000${item.messageId}\u0000${item.partId}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.delta += item.delta;
+      existing.reasoning = existing.reasoning || item.reasoning;
+      continue;
+    }
+
+    const next = { ...item };
+    byKey.set(key, next);
+    ordered.push(next);
+  }
+  return ordered;
+}
+
 function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent) {
   const queryClient = getReactQueryClient();
+  const input = entry.input;
 
   if (event.type === "session.status") {
     const props = (event.properties ?? {}) as { sessionID?: string; status?: SessionStatus };
     if (!props.sessionID || !props.status) return;
     if (!isTrackedSession(entry, props.sessionID)) return;
     queryClient.setQueryData(statusKey(workspaceId, props.sessionID), props.status);
+    if (input && !isLiveStatus(props.status)) releaseRetainedSessionSoon(input, entry, props.sessionID);
     return;
   }
 
@@ -369,10 +441,34 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     const mapped = toUIPart(part);
     if (!mapped) return;
     const pending = entry.pendingDeltas.get(part.id);
+    // Seed the new part with any deltas that arrived before this
+    // declaration. We deliberately ignore `pending.reasoning` — it
+    // can't be trusted because opencode emits `field: "text"` for
+    // both text and reasoning streams. The part's actual kind
+    // (`mapped.type`) is the source of truth.
+    //
+    // Both `pending.text` and `mapped.text` are cumulative views of the
+    // same stream, so we keep whichever is longer instead of
+    // concatenating (concatenation double-counts the bytes that landed
+    // in both). Without this, reasoning text shows up duplicated in the
+    // streaming UI.
     const seededPart =
-      pending && ((mapped.type === "text" && !pending.reasoning) || (mapped.type === "reasoning" && pending.reasoning))
-        ? { ...mapped, text: `${mapped.text}${pending.text}`, state: "streaming" as const }
+      pending && (mapped.type === "text" || mapped.type === "reasoning")
+        ? {
+            ...mapped,
+            text: pending.text.length > mapped.text.length ? pending.text : mapped.text,
+            state: "streaming" as const,
+          }
         : mapped;
+    // Drop any deltas for this partID still queued in the rAF flush
+    // buffer — they've already been incorporated into `mapped.text`.
+    // Without this, the rAF flush would re-append them on top of the
+    // cumulative text we just wrote, duplicating bytes mid-stream.
+    if (entry.deltaFlushBuffer.length > 0) {
+      entry.deltaFlushBuffer = entry.deltaFlushBuffer.filter(
+        (item) => item.partId !== part.id,
+      );
+    }
     queryClient.setQueryData<UIMessage[]>(transcriptKey(workspaceId, part.sessionID), (current = []) => {
       // If we already have this message, keep its role; otherwise infer
       // from the alternation pattern. Only the newly-stubbed case needs
@@ -398,13 +494,17 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     };
     if (!props.sessionID || !props.messageID || !props.partID || !props.delta) return;
     if (!isTrackedSession(entry, props.sessionID)) return;
-    // Buffer this delta and let the frame flusher apply all queued deltas
-    // for this entry in a single setQueryData call per affected session.
+    // Note: we do NOT trust `props.field` to disambiguate reasoning vs
+    // text. Opencode emits `field: "text"` for both kinds; the actual
+    // distinction lives on the part's `type`, which we only see via
+    // `message.part.updated`. The flusher resolves the kind at apply
+    // time, falling back to `pendingDeltas` if the part hasn't been
+    // declared yet.
     entry.deltaFlushBuffer.push({
       sessionId: props.sessionID!,
       messageId: props.messageID!,
       partId: props.partID!,
-      reasoning: props.field === "reasoning",
+      reasoning: false,
       delta: props.delta!,
     });
     scheduleDeltaFlush(entry, workspaceId);
@@ -416,6 +516,7 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     if (!props.sessionID) return;
     if (!isTrackedSession(entry, props.sessionID)) return;
     queryClient.setQueryData(statusKey(workspaceId, props.sessionID), idleStatus);
+    if (input) releaseRetainedSessionSoon(input, entry, props.sessionID);
   }
 }
 
@@ -427,8 +528,14 @@ function scheduleDeltaFlush(entry: SyncEntry, workspaceId: string) {
     if (entry.deltaFlushBuffer.length === 0) return;
     flushDeltas(entry, workspaceId);
   };
-  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.requestAnimationFrame === "function" &&
+    (typeof document === "undefined" || document.visibilityState === "visible")
+  ) {
     window.requestAnimationFrame(run);
+  } else if (typeof window !== "undefined") {
+    window.setTimeout(run, 50);
   } else {
     queueMicrotask(run);
   }
@@ -436,7 +543,7 @@ function scheduleDeltaFlush(entry: SyncEntry, workspaceId: string) {
 
 function flushDeltas(entry: SyncEntry, workspaceId: string) {
   const queryClient = getReactQueryClient();
-  const pending = entry.deltaFlushBuffer;
+  const pending = coalescePendingDeltas(entry.deltaFlushBuffer);
   entry.deltaFlushBuffer = [];
 
   // Group by session id so each transcript cache is touched at most once
@@ -453,6 +560,7 @@ function flushDeltas(entry: SyncEntry, workspaceId: string) {
       transcriptKey(workspaceId, sessionId),
       (current = []) => {
         let next = current;
+        const nextById = new Map(next.map((message) => [message.id, message]));
         // Track which message shells we've ensured exist this flush so we
         // don't call upsertMessage for the same message on every delta.
         const ensuredMessageIds = new Set<string>();
@@ -462,20 +570,32 @@ function flushDeltas(entry: SyncEntry, workspaceId: string) {
             // state; otherwise infer it from the alternation pattern
             // so the brief "stub before message.updated" window doesn't
             // mislabel the message's bubble style.
-            const existing = next.find((m) => m.id === item.messageId);
+            const existing = nextById.get(item.messageId);
             const role = existing?.role ?? inferStubRole(next);
-            next = upsertMessage(next, { id: item.messageId, role, parts: [] });
+            const ensuredMessage = { id: item.messageId, role, parts: existing?.parts ?? [] };
+            next = upsertMessage(next, ensuredMessage);
+            nextById.set(item.messageId, ensuredMessage);
             ensuredMessageIds.add(item.messageId);
           }
-          next = appendDelta(next, item.messageId, item.partId, item.delta, item.reasoning);
-          // If the delta landed on a synthetic "no matching part" case, keep
-          // the text so a later message.part.updated event can stitch it.
-          const message = next.find((m) => m.id === item.messageId);
-          const matched = message?.parts.some((part) =>
-            (part.type === "dynamic-tool" && part.toolCallId === item.partId) ||
-              getPartMetadataId(part) === item.partId,
+          // Resolve the part kind from the transcript instead of trusting
+          // the inbound delta event (opencode emits `field: "text"` for
+          // both text and reasoning parts). If the part hasn't been
+          // declared yet via `message.part.updated`, defer the delta into
+          // `entry.pendingDeltas` so the part can be created with the
+          // correct kind later. Without this, every delta lands as a text
+          // part — and reasoning content leaks into the response markdown
+          // until the next reload reconstructs the transcript from the
+          // snapshot.
+          const ownerMessage = nextById.get(item.messageId);
+          const ownerPartsById = new Map(
+            (ownerMessage?.parts ?? []).flatMap((part) => {
+              const id = part.type === "dynamic-tool" ? part.toolCallId : getPartMetadataId(part);
+              return id ? [[id, part] as const] : [];
+            }),
           );
-          if (!matched) {
+          const ownerPart = ownerPartsById.get(item.partId);
+
+          if (!ownerPart) {
             const existing = entry.pendingDeltas.get(item.partId) ?? {
               messageId: item.messageId,
               reasoning: item.reasoning,
@@ -483,7 +603,11 @@ function flushDeltas(entry: SyncEntry, workspaceId: string) {
             };
             existing.text += item.delta;
             entry.pendingDeltas.set(item.partId, existing);
+            continue;
           }
+
+          const reasoning = ownerPart.type === "reasoning";
+          next = appendDelta(next, item.messageId, item.partId, item.delta, reasoning);
         }
         return next;
       },
@@ -497,10 +621,15 @@ function startSync(input: SyncOptions) {
   const entry = syncs.get(syncKey(input));
   let disposed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  let activeConnectionController: AbortController | null = null;
+  let lastEventAt = Date.now();
   let retryDelayMs = 1_000;
+  const staleStreamMs = 30_000;
 
   const scheduleRetry = () => {
     if (disposed || controller.signal.aborted || retryTimer) return;
+    activeConnectionController = null;
     retryTimer = setTimeout(() => {
       retryTimer = null;
       void connect();
@@ -509,27 +638,48 @@ function startSync(input: SyncOptions) {
   };
 
   const connect = async () => {
+    const connectionController = new AbortController();
+    activeConnectionController = connectionController;
     try {
-      const sub = await client.event.subscribe(undefined, { signal: controller.signal });
+      const sub = await client.event.subscribe(undefined, { signal: connectionController.signal });
       retryDelayMs = 1_000;
+      lastEventAt = Date.now();
       for await (const raw of sub.stream) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || connectionController.signal.aborted) return;
+        lastEventAt = Date.now();
         const event = normalizeEvent(raw);
         if (!event) continue;
         if (!entry) continue;
         applyEvent(entry, input.workspaceId, event);
       }
-      if (!controller.signal.aborted) scheduleRetry();
+      if (!controller.signal.aborted && activeConnectionController === connectionController) scheduleRetry();
     } catch (error) {
-      if (!controller.signal.aborted && shouldRetrySyncSubscribe(error)) scheduleRetry();
+      if (
+        !controller.signal.aborted &&
+        (connectionController.signal.aborted || shouldRetrySyncSubscribe(error))
+      ) {
+        scheduleRetry();
+      }
+    } finally {
+      if (activeConnectionController === connectionController) activeConnectionController = null;
     }
   };
 
   void connect();
+  watchdogTimer = setInterval(() => {
+    if (disposed || controller.signal.aborted || retryTimer) return;
+    const active = activeConnectionController;
+    if (!active || active.signal.aborted) return;
+    if (Date.now() - lastEventAt < staleStreamMs) return;
+    active.abort();
+    scheduleRetry();
+  }, 10_000);
 
   return () => {
     disposed = true;
     if (retryTimer) clearTimeout(retryTimer);
+    if (watchdogTimer) clearInterval(watchdogTimer);
+    activeConnectionController?.abort();
     controller.abort();
   };
 }
@@ -538,14 +688,21 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
   const key = syncKey(input);
   const existing = syncs.get(key);
   if (existing) {
+    if (existing.disposeTimer) {
+      clearTimeout(existing.disposeTimer);
+      existing.disposeTimer = null;
+    }
     existing.refs += 1;
     return () => releaseWorkspaceSessionSync(input);
   }
 
   syncs.set(key, {
+    input,
     refs: 1,
     dispose: () => {},
+    disposeTimer: null,
     trackedSessionRefs: new Map(),
+    retainedSessionTimers: new Map(),
     pendingDeltas: new Map(),
     deltaFlushBuffer: [],
     deltaFlushScheduled: false,
@@ -563,13 +720,9 @@ function releaseWorkspaceSessionSync(input: SyncOptions) {
   if (!existing) return;
   existing.refs -= 1;
   if (existing.refs > 0) return;
-  // Immediate disposal is important here: a single OpenCode runtime is shared
-  // across local workspaces, and keeping old workspace subscriptions alive for
-  // 10s means rapid workspace switches accumulate multiple parallel event
-  // streams. Under larger transcripts that duplicates cache writes and can make
-  // the UI feel frozen after a handful of switches.
-  existing.dispose();
-  syncs.delete(key);
+  if (existing.retainedSessionTimers.size === 0) {
+    disposeWorkspaceSync(key, existing);
+  }
 }
 
 export function seedSessionState(workspaceId: string, snapshot: OpenworkSessionSnapshot) {
@@ -578,16 +731,11 @@ export function seedSessionState(workspaceId: string, snapshot: OpenworkSessionS
   const incoming = snapshotToUIMessages(snapshot);
   const existing = queryClient.getQueryData<UIMessage[]>(key);
 
-  if (existing && existing.length > 0 && (snapshot.status.type === "busy" || snapshot.status.type === "retry")) {
-    // During active streaming the server snapshot may have empty/stale text
-    // for in-progress parts while the cache already accumulated text via
-    // deltas.  Merge so we never overwrite longer cached text with shorter
-    // server text.
-    const merged = mergeSnapshotIntoCachedMessages(incoming, existing);
-    queryClient.setQueryData(key, merged);
-  } else {
-    queryClient.setQueryData(key, incoming);
-  }
+  queryClient.setQueryData(key, reconcileTranscriptMessages({
+    currentMessages: existing ?? [],
+    snapshotMessages: incoming,
+    reason: "snapshot",
+  }));
 
   queryClient.setQueryData(statusKey(workspaceId, snapshot.session.id), snapshot.status);
   queryClient.setQueryData(todoKey(workspaceId, snapshot.session.id), snapshot.todos);
@@ -600,6 +748,12 @@ export function trackWorkspaceSessionSync(input: SyncOptions, sessionId: string 
   const entry = syncs.get(syncKey(input));
   if (!entry) return () => {};
 
+  const retainedTimer = entry.retainedSessionTimers.get(normalizedSessionId);
+  if (retainedTimer) {
+    clearTimeout(retainedTimer);
+    entry.retainedSessionTimers.delete(normalizedSessionId);
+  }
+
   entry.trackedSessionRefs.set(
     normalizedSessionId,
     (entry.trackedSessionRefs.get(normalizedSessionId) ?? 0) + 1,
@@ -609,13 +763,62 @@ export function trackWorkspaceSessionSync(input: SyncOptions, sessionId: string 
     const current = entry.trackedSessionRefs.get(normalizedSessionId) ?? 0;
     if (current <= 1) {
       entry.trackedSessionRefs.delete(normalizedSessionId);
-      entry.deltaFlushBuffer = entry.deltaFlushBuffer.filter(
-        (item) => item.sessionId !== normalizedSessionId,
-      );
-      const queryClient = getReactQueryClient();
-      queryClient.removeQueries({ queryKey: permissionKey(input.workspaceId, normalizedSessionId), exact: true });
+      retainSession(input, entry, normalizedSessionId);
       return;
     }
     entry.trackedSessionRefs.set(normalizedSessionId, current - 1);
   };
+}
+
+export function trackWorkspaceSessionsSync(input: SyncOptions, sessionIds: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const releases = sessionIds.flatMap((sessionId) => {
+    const id = sessionId?.trim() ?? "";
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [trackWorkspaceSessionSync(input, id)];
+  });
+  return () => {
+    for (const release of releases) release();
+  };
+}
+
+export function __createWorkspaceSessionSyncForTest(input: SyncOptions) {
+  const key = syncKey(input);
+  syncs.set(key, {
+    input,
+    refs: 1,
+    dispose: () => {},
+    disposeTimer: null,
+    trackedSessionRefs: new Map(),
+    retainedSessionTimers: new Map(),
+    pendingDeltas: new Map(),
+    deltaFlushBuffer: [],
+    deltaFlushScheduled: false,
+  });
+  return () => {
+    const entry = syncs.get(key);
+    if (entry) {
+      for (const timer of entry.retainedSessionTimers.values()) clearTimeout(timer);
+    }
+    syncs.delete(key);
+  };
+}
+
+export function __hasWorkspaceSessionSyncForTest(input: SyncOptions) {
+  return syncs.has(syncKey(input));
+}
+
+export function __disposeWorkspaceSessionSyncForTest(input: SyncOptions) {
+  const key = syncKey(input);
+  const entry = syncs.get(key);
+  if (!entry) return;
+  entry.refs = 0;
+  disposeWorkspaceSync(key, entry);
+}
+
+export function __applySessionSyncEventForTest(input: SyncOptions, event: OpencodeEvent) {
+  const entry = syncs.get(syncKey(input));
+  if (!entry) return;
+  applyEvent(entry, input.workspaceId, event);
 }

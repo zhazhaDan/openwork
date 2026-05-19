@@ -17,7 +17,6 @@ import {
   type SlackIdentity,
   type TelegramIdentity,
 } from "./config.js";
-import { registerExtCommands } from "./channels-ext.js";
 import { BridgeStore } from "./db.js";
 import { createLogger } from "./logger.js";
 import { createClient } from "./opencode.js";
@@ -169,7 +168,7 @@ async function runStart(pathOverride?: string, options?: { opencodeUrl?: string 
   if (!process.env.OPENCODE_DIRECTORY) {
     process.env.OPENCODE_DIRECTORY = config.opencodeDirectory;
   }
-  const bridge = await startBridge(config, logger, reporter, { routerVersion: VERSION });
+  const bridge = await startBridge(config, logger, reporter);
   if (process.stdout.isTTY) {
     reporter.onStatus?.("Commands: opencode-router identities, opencode-router bindings, opencode-router status");
   }
@@ -430,9 +429,6 @@ slack
     process.exit(deleted ? 0 : 1);
   });
 
-// Extended channel commands (feishu, mattermost).
-registerExtCommands(program, loadConfig, readConfigFile, writeConfigFile, normalizeIdentityId, outputJson, outputError);
-
 // -----------------------------------------------------------------------------
 // Bindings
 // -----------------------------------------------------------------------------
@@ -450,9 +446,8 @@ bindings
     const store = new BridgeStore(config.dbPath);
     const channelRaw = opts.channel?.trim().toLowerCase();
     const identityId = opts.identity?.trim() ? normalizeIdentityId(opts.identity) : undefined;
-    const validChannels = ["telegram", "slack", "feishu", "mattermost"];
     const channel: ChannelName | undefined =
-      channelRaw && validChannels.includes(channelRaw) ? (channelRaw as ChannelName) : channelRaw ? (outputError("Invalid channel"), undefined) : undefined;
+      channelRaw === "telegram" || channelRaw === "slack" ? (channelRaw as ChannelName) : channelRaw ? (outputError("Invalid channel"), undefined) : undefined;
     const items = store
       .listBindings({ ...(channel ? { channel } : {}), ...(identityId ? { identityId } : {}) })
       .map((b) => ({

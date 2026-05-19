@@ -14,6 +14,7 @@ import { ApiError, formatError } from "./errors.js";
 import { readJsoncFile, updateJsoncPath, updateJsoncTopLevel, writeJsoncFile } from "./jsonc.js";
 import { recordAudit, readAuditEntries, readLastAudit } from "./audit.js";
 import { ReloadEventStore } from "./events.js";
+import { computeReloadFingerprint } from "./reload-fingerprint.js";
 import { startReloadWatchers } from "./reload-watcher.js";
 import { opencodeConfigPath, openworkConfigPath, projectCommandsDir, projectSkillsDir } from "./workspace-files.js";
 import { ensureDir, exists, hashToken, shortId } from "./utils.js";
@@ -49,9 +50,14 @@ import {
   stripSensitiveWorkspaceExportData,
   type WorkspaceExportSensitiveMode,
 } from "./workspace-export-safety.js";
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
+import { serve, type ServeResult } from "./serve-node.js";
 import pkg from "../package.json" with { type: "json" };
+import constants from "../../../constants.json" with { type: "json" };
 
 const SERVER_VERSION = pkg.version;
+const OPENCODE_VERSION = constants.opencodeVersion.trim().replace(/^v/, "");
 
 const FILE_SESSION_DEFAULT_TTL_MS = 15 * 60 * 1000;
 const FILE_SESSION_MIN_TTL_MS = 30 * 1000;
@@ -60,6 +66,11 @@ const FILE_SESSION_MAX_BATCH_ITEMS = 64;
 const FILE_SESSION_MAX_FILE_BYTES = 5_000_000;
 const FILE_SESSION_CATALOG_DEFAULT_LIMIT = 2000;
 const FILE_SESSION_CATALOG_MAX_LIMIT = 10000;
+
+const reloadBaselineRefreshers = new WeakMap<
+  ServerConfig,
+  (workspaceId: string, reasons?: ReloadReason[]) => Promise<void>
+>();
 
 type LogLevel = "info" | "warn" | "error";
 
@@ -165,6 +176,19 @@ function parseWorkspaceMount(pathname: string): { workspaceId: string; restPath:
   return { workspaceId: decodeURIComponent(workspaceId), restPath };
 }
 
+function parseWorkspaceOpencodeMount(pathname: string): { workspaceId: string; restPath: string } | null {
+  if (!pathname.startsWith("/workspace/")) return null;
+  const remainder = pathname.slice("/workspace/".length);
+  if (!remainder) return null;
+  const slash = remainder.indexOf("/");
+  if (slash === -1) return null;
+  const workspaceId = remainder.slice(0, slash);
+  const restPath = remainder.slice(slash) || "/";
+  if (!workspaceId.trim()) return null;
+  if (restPath !== "/opencode" && !restPath.startsWith("/opencode/")) return null;
+  return { workspaceId: decodeURIComponent(workspaceId), restPath };
+}
+
 function normalizeOpencodeProxyPath(proxyPath: string): string {
   const raw = (proxyPath ?? "").trim() || "/";
   const withoutPrefix = raw.startsWith("/opencode") ? raw.slice("/opencode".length) : raw;
@@ -213,13 +237,16 @@ interface RequestContext {
   actor?: Actor;
 }
 
-export function startServer(config: ServerConfig) {
+export async function startServer(config: ServerConfig): Promise<ServeResult> {
   const approvals = new ApprovalService(config.approval);
   const reloadEvents = new ReloadEventStore();
   const tokens = new TokenService(config);
   const env = new EnvService();
   const logger = createServerLogger(config);
   let watcherHandle = startReloadWatchers({ config, reloadEvents, logger });
+  const refreshWorkspaceReloadBaseline = (workspaceId: string, reasons?: ReloadReason[]) =>
+    watcherHandle.refreshWorkspace(workspaceId, reasons);
+  reloadBaselineRefreshers.set(config, refreshWorkspaceReloadBaseline);
   const restartReloadWatchers = () => {
     watcherHandle.close();
     watcherHandle = startReloadWatchers({ config, reloadEvents, logger });
@@ -258,12 +285,7 @@ export function startServer(config: ServerConfig) {
         return wrapped;
       };
 
-      if (request.method === "OPTIONS") {
-        return finalize(new Response(null, { status: 204 }));
-      }
-
-      const mount = parseWorkspaceMount(url.pathname);
-      if (mount && (mount.restPath === "/opencode" || mount.restPath.startsWith("/opencode/"))) {
+      const proxyWorkspaceOpencodeMount = async (mount: { workspaceId: string; restPath: string }) => {
         authMode = "client";
         try {
           const actor = await requireClient(request, config, tokens);
@@ -280,18 +302,20 @@ export function startServer(config: ServerConfig) {
           errorMessage = apiError.message;
           return finalize(jsonResponse(formatError(apiError), apiError.status));
         }
+      };
+
+      if (request.method === "OPTIONS") {
+        return finalize(new Response(null, { status: 204 }));
       }
 
-      if (mount && (mount.restPath === "/opencode-router" || mount.restPath.startsWith("/opencode-router/"))) {
-        // opencode-router 代理已下线：wudongPC main 进程现在直连 router HTTP，
-        // openwork-server 不再承担代理职责。返回 410 Gone 给意外的旧调用方一个明确信号。
-        errorMessage = "opencode_router_proxy_removed";
-        return finalize(
-          jsonResponse(
-            { code: "gone", message: "opencode-router proxy moved to client; call router HTTP directly" },
-            410,
-          ),
-        );
+      const canonicalOpencodeMount = parseWorkspaceOpencodeMount(url.pathname);
+      if (canonicalOpencodeMount) {
+        return proxyWorkspaceOpencodeMount(canonicalOpencodeMount);
+      }
+
+      const mount = parseWorkspaceMount(url.pathname);
+      if (mount && (mount.restPath === "/opencode" || mount.restPath.startsWith("/opencode/"))) {
+        return proxyWorkspaceOpencodeMount(mount);
       }
 
       // Allow clients to use a mounted base URL (e.g. http://host:8787/w/<id>) while
@@ -327,17 +351,6 @@ export function startServer(config: ServerConfig) {
           errorMessage = apiError.message;
           return finalize(jsonResponse(formatError(apiError), apiError.status));
         }
-      }
-
-      if (url.pathname === "/opencode-router" || url.pathname.startsWith("/opencode-router/")) {
-        // opencode-router 代理已下线（同上）。
-        errorMessage = "opencode_router_proxy_removed";
-        return finalize(
-          jsonResponse(
-            { code: "gone", message: "opencode-router proxy moved to client; call router HTTP directly" },
-            410,
-          ),
-        );
       }
 
       const route = matchRoute(routes, request.method, url.pathname);
@@ -380,11 +393,19 @@ export function startServer(config: ServerConfig) {
     },
   };
 
-  (serverOptions as { idleTimeout?: number }).idleTimeout = 120;
+  const server = await serve({
+    ...serverOptions,
+    idleTimeout: 120,
+  });
 
-  const server = Bun.serve(serverOptions);
-
-  return server;
+  return {
+    ...server,
+    stop: () => {
+      watcherHandle.close();
+      reloadBaselineRefreshers.delete(config);
+      server.stop();
+    },
+  };
 }
 
 function matchRoute(routes: Route[], method: string, path: string) {
@@ -463,9 +484,8 @@ async function fetchOpencodeJson(
   const headers = new Headers();
   headers.set("Content-Type", "application/json");
 
-  const directoryHeader = buildOpencodeDirectoryHeader(resolveOpencodeDirectory(workspace));
-  if (directoryHeader) {
-    headers.set("x-opencode-directory", directoryHeader);
+  if (directory) {
+    headers.set("x-opencode-directory", directory);
   }
 
   const auth = connection.authHeader ?? null;
@@ -513,9 +533,9 @@ async function proxyOpencodeRequest(input: {
   headers.delete("host");
   headers.delete("origin");
 
-  const directoryHeader = workspace ? buildOpencodeDirectoryHeader(resolveOpencodeDirectory(workspace)) : null;
-  if (directoryHeader && !headers.has("x-opencode-directory")) {
-    headers.set("x-opencode-directory", directoryHeader);
+  const directory = workspace ? resolveOpencodeDirectory(workspace) : null;
+  if (directory && !headers.has("x-opencode-directory")) {
+    headers.set("x-opencode-directory", directory);
   }
 
   const auth = workspace ? resolveWorkspaceOpencodeConnection(input.config, workspace).authHeader ?? null : null;
@@ -524,13 +544,17 @@ async function proxyOpencodeRequest(input: {
   }
 
   const method = input.request.method.toUpperCase();
-  const body = method === "GET" || method === "HEAD" ? undefined : input.request.body;
+  // Buffer the request body so it can be forwarded reliably across Node.js
+  // stream boundaries (Readable.toWeb streams from the HTTP adapter aren't
+  // always accepted directly by Node's global fetch as a body).
+  const body = method === "GET" || method === "HEAD"
+    ? undefined
+    : await input.request.arrayBuffer().then((buf) => (buf.byteLength > 0 ? buf : undefined));
   if (isSessionCommandProxyRequest(method, proxyPath)) {
-    const bufferedBody = body ? await input.request.arrayBuffer() : undefined;
     void fetch(targetUrl, {
       method,
       headers,
-      body: bufferedBody,
+      body,
     }).catch(() => {
       // Command failures are surfaced through the OpenCode event stream.
     });
@@ -650,7 +674,8 @@ function buildCapabilities(config: ServerConfig): Capabilities {
   return {
     schemaVersion,
     serverVersion: SERVER_VERSION,
-    skills: { read: true, write: writeEnabled, source: "openwork" },
+    opencodeVersion: OPENCODE_VERSION,
+    skills: { read: true, write: writeEnabled, source: "wudong" },
     hub: {
       skills: {
         read: true,
@@ -675,8 +700,8 @@ function buildCapabilities(config: ServerConfig): Capabilities {
       files: {
         injection: writeEnabled && inboxEnabled,
         outbox: outboxEnabled,
-        inboxPath: ".opencode/openwork/inbox/",
-        outboxPath: ".opencode/openwork/outbox/",
+        inboxPath: ".tron/wudong/inbox/",
+        outboxPath: ".tron/wudong/outbox/",
         maxBytes,
       },
     },
@@ -770,6 +795,8 @@ export function normalizeWorkspaceRelativePath(input: string, options: { allowSu
   let normalized = raw.replace(/\\/g, "/");
   normalized = normalized.replace(/^\/+/, "");
   normalized = normalized.replace(/^\.\//, "");
+  normalized = normalized.replace(/^workspaces\/[^/]+\//i, "");
+  normalized = normalized.replace(/^workspace\/(?:ws_[^/]+|\d+|[0-9a-f-]{6,})\//i, "");
   normalized = normalized.replace(/^workspace\//, "");
   normalized = normalized.replace(/^\/+/, "");
 
@@ -790,7 +817,31 @@ export function normalizeWorkspaceRelativePath(input: string, options: { allowSu
 
 export function isSupportedWorkspaceTextFilePath(relativePath: string): boolean {
   const lowered = relativePath.toLowerCase();
-  return [".md", ".mdx", ".markdown", ".json", ".jsonc", ".ts", ".js", ".mjs", ".cjs", ".txt"].some((ext) =>
+  return [
+    ".md",
+    ".mdx",
+    ".markdown",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".xml",
+    ".html",
+    ".htm",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".css",
+    ".scss",
+    ".txt",
+    ".log",
+  ].some((ext) =>
     lowered.endsWith(ext),
   );
 }
@@ -822,6 +873,126 @@ function decodeArtifactId(id: string): string {
   } catch {
     throw new ApiError(400, "invalid_artifact", "Artifact id is invalid");
   }
+}
+
+function contentTypeForPath(path: string): string {
+  const lowered = path.toLowerCase();
+  if (lowered.endsWith(".html") || lowered.endsWith(".htm")) return "text/html; charset=utf-8";
+  if (lowered.endsWith(".svg")) return "image/svg+xml";
+  if (lowered.endsWith(".png")) return "image/png";
+  if (lowered.endsWith(".jpg") || lowered.endsWith(".jpeg")) return "image/jpeg";
+  if (lowered.endsWith(".gif")) return "image/gif";
+  if (lowered.endsWith(".webp")) return "image/webp";
+  if (lowered.endsWith(".pdf")) return "application/pdf";
+  if (lowered.endsWith(".csv")) return "text/csv; charset=utf-8";
+  if (lowered.endsWith(".tsv")) return "text/tab-separated-values; charset=utf-8";
+  if (lowered.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (lowered.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lowered.endsWith(".ods")) return "application/vnd.oasis.opendocument.spreadsheet";
+  if (isSupportedWorkspaceTextFilePath(path)) return "text/plain; charset=utf-8";
+  return "application/octet-stream";
+}
+
+type ArtifactTargetInput = {
+  kind?: unknown;
+  value?: unknown;
+  name?: unknown;
+  preview?: unknown;
+  confidence?: unknown;
+  reason?: unknown;
+};
+
+function artifactPreviewForPath(path: string): string {
+  const lowered = path.toLowerCase();
+  if (/\.(md|markdown|mdx)$/.test(lowered)) return "markdown";
+  if (/\.(csv|tsv|xlsx|xls|ods)$/.test(lowered)) return "sheet";
+  if (/\.(png|jpe?g|gif|webp|svg)$/.test(lowered)) return "image";
+  if (lowered.endsWith(".pdf")) return "pdf";
+  if (/\.(html|htm)$/.test(lowered)) return "html";
+  if (isSupportedWorkspaceTextFilePath(path)) return "text";
+  return "external";
+}
+
+function normalizeUrlTarget(value: string): string | null {
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveWorkspaceArtifactTargets(workspaceRoot: string, input: unknown): Promise<Array<Record<string, unknown>>> {
+  const targets = Array.isArray(input) ? input.slice(0, 80) : [];
+  const results = new Map<string, Record<string, unknown>>();
+
+  for (const item of targets) {
+    if (!item || typeof item !== "object") continue;
+    const target = item as ArtifactTargetInput;
+    const kind = target.kind === "url" ? "url" : "file";
+    const rawValue = typeof target.value === "string" ? target.value.trim() : "";
+    if (!rawValue) continue;
+    const confidence = typeof target.confidence === "number" && Number.isFinite(target.confidence) ? target.confidence : 0;
+    const reason = typeof target.reason === "string" ? target.reason : "server";
+
+    if (kind === "url") {
+      const url = normalizeUrlTarget(rawValue);
+      if (!url) continue;
+      const key = `url:${url}`;
+      const next = {
+        id: key,
+        kind: "url",
+        value: url,
+        name: typeof target.name === "string" && target.name.trim() ? target.name.trim() : url,
+        preview: "browser",
+        confidence,
+        reason,
+        exists: true,
+      };
+      const previous = results.get(key);
+      if (!previous || confidence >= Number(previous.confidence ?? 0)) results.set(key, next);
+      continue;
+    }
+
+    let relativePath: string;
+    try {
+      relativePath = normalizeWorkspaceRelativePath(rawValue, { allowSubdirs: true });
+    } catch {
+      continue;
+    }
+    const key = `file:${relativePath.toLowerCase()}`;
+    const absPath = resolveSafeChildPath(workspaceRoot, relativePath);
+    let existsFile = false;
+    let size: number | undefined;
+    let updatedAt: number | undefined;
+    let kindValue: "file" | "dir" | "other" | undefined;
+    if (await exists(absPath)) {
+      const info = await stat(absPath);
+      kindValue = info.isFile() ? "file" : info.isDirectory() ? "dir" : "other";
+      existsFile = info.isFile();
+      size = info.size;
+      updatedAt = info.mtimeMs;
+    }
+    const next = {
+      id: key,
+      kind: "file",
+      value: relativePath,
+      name: basename(relativePath),
+      preview: artifactPreviewForPath(relativePath),
+      confidence,
+      reason,
+      exists: existsFile,
+      fileKind: kindValue,
+      size,
+      updatedAt,
+      contentType: contentTypeForPath(relativePath),
+    };
+    const previous = results.get(key);
+    if (!previous || confidence >= Number(previous.confidence ?? 0)) results.set(key, next);
+  }
+
+  return Array.from(results.values());
 }
 
 function encodeInboxId(path: string): string {
@@ -1046,7 +1217,7 @@ function buildConfigTrigger(path: string): ReloadTrigger {
   const name = path.split(/[\\/]/).filter(Boolean).pop();
   return {
     type: "config",
-    name: name || "tron.json",
+    name: name || "opencode.json",
     action: "updated",
     path,
   };
@@ -1118,11 +1289,11 @@ function createRoutes(
   };
 
   addRoute(routes, "GET", "/health", "none", async () => {
-    return jsonResponse({ ok: true, version: SERVER_VERSION, uptimeMs: Date.now() - config.startedAt });
+    return jsonResponse({ ok: true, version: SERVER_VERSION, opencodeVersion: OPENCODE_VERSION, uptimeMs: Date.now() - config.startedAt });
   });
 
   addRoute(routes, "GET", "/w/:id/health", "none", async () => {
-    return jsonResponse({ ok: true, version: SERVER_VERSION, uptimeMs: Date.now() - config.startedAt });
+    return jsonResponse({ ok: true, version: SERVER_VERSION, opencodeVersion: OPENCODE_VERSION, uptimeMs: Date.now() - config.startedAt });
   });
 
   // Dev log sink: append browser console + error events to a file that an
@@ -1212,6 +1383,7 @@ function createRoutes(
     return jsonResponse({
       ok: true,
       version: SERVER_VERSION,
+      opencodeVersion: OPENCODE_VERSION,
       uptimeMs: Date.now() - config.startedAt,
       readOnly: config.readOnly,
       approval: config.approval,
@@ -1246,6 +1418,7 @@ function createRoutes(
     return jsonResponse({
       ok: true,
       version: SERVER_VERSION,
+      opencodeVersion: OPENCODE_VERSION,
       uptimeMs: Date.now() - config.startedAt,
       readOnly: config.readOnly,
       approval: config.approval,
@@ -1590,8 +1763,13 @@ function createRoutes(
       paths: [configPath],
     });
 
-    await ensureDir(dirname(configPath));
-    await writeFile(configPath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    const nextContent = content.endsWith("\n") ? content : `${content}\n`;
+    const current = await readRawOpencodeConfig(configPath);
+    const changed = !current.exists || current.content !== nextContent;
+    if (changed) {
+      await ensureDir(dirname(configPath));
+      await writeFile(configPath, nextContent, "utf8");
+    }
 
     await recordAudit(workspace.path, {
       id: shortId(),
@@ -1603,7 +1781,7 @@ function createRoutes(
       timestamp: Date.now(),
     });
 
-    if (scope === "project") {
+    if (scope === "project" && changed) {
       emitReloadEvent(ctx.reloadEvents, workspace, "config", buildConfigTrigger(configPath));
     }
 
@@ -1706,6 +1884,10 @@ function createRoutes(
       paths: [opencode ? opencodeConfigPath(workspace.path) : null, openwork ? openworkConfigPath(workspace.path) : null].filter(Boolean) as string[],
     });
 
+    const configFingerprintBefore = opencode
+      ? await computeReloadFingerprint(workspace.path, "config")
+      : null;
+
     if (opencode) {
       const configPath = opencodeConfigPath(workspace.path);
       const nextOpencode = ensurePlainObject(opencode);
@@ -1747,7 +1929,7 @@ function createRoutes(
       timestamp: Date.now(),
     });
 
-    if (opencode) {
+    if (opencode && configFingerprintBefore !== await computeReloadFingerprint(workspace.path, "config")) {
       emitReloadEvent(ctx.reloadEvents, workspace, "config", buildConfigTrigger(opencodeConfigPath(workspace.path)));
     }
 
@@ -1811,7 +1993,8 @@ function createRoutes(
     headers.set("Content-Type", "application/octet-stream");
     headers.set("Content-Length", String(info.size));
     headers.set("Content-Disposition", `attachment; filename=\"${basename(relativePath)}\"`);
-    return new Response((Bun as any).file(absPath), { status: 200, headers });
+    const stream = Readable.toWeb(createReadStream(absPath)) as unknown as ReadableStream;
+    return new Response(stream, { status: 200, headers });
   });
 
   addRoute(routes, "POST", "/workspace/:id/inbox", "client", async (ctx) => {
@@ -1900,7 +2083,15 @@ function createRoutes(
     headers.set("Content-Type", "application/octet-stream");
     headers.set("Content-Length", String(info.size));
     headers.set("Content-Disposition", `attachment; filename="${basename(relativePath)}"`);
-    return new Response((Bun as any).file(absPath), { status: 200, headers });
+    const stream = Readable.toWeb(createReadStream(absPath)) as unknown as ReadableStream;
+    return new Response(stream, { status: 200, headers });
+  });
+
+  addRoute(routes, "POST", "/workspace/:id/artifacts/resolve", "client", async (ctx) => {
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const items = await resolveWorkspaceArtifactTargets(workspace.path, (body as Record<string, unknown>).targets);
+    return jsonResponse({ items });
   });
 
   addRoute(routes, "POST", "/workspace/:id/files/sessions", "client", async (ctx) => {
@@ -2262,7 +2453,7 @@ function createRoutes(
     const requested = (ctx.url.searchParams.get("path") ?? "").trim();
     const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
     if (!isSupportedWorkspaceTextFilePath(relativePath)) {
-      throw new ApiError(400, "invalid_path", "Only Markdown and OpenCode plugin text files are supported");
+      throw new ApiError(400, "invalid_path", "Only supported text artifact files can be read inline");
     }
 
     const absPath = resolveSafeChildPath(workspace.path, relativePath);
@@ -2283,6 +2474,107 @@ function createRoutes(
     return jsonResponse({ path: relativePath, content, bytes: info.size, updatedAt: info.mtimeMs });
   });
 
+  addRoute(routes, "GET", "/workspace/:id/files/stat", "client", async (ctx) => {
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const requested = (ctx.url.searchParams.get("path") ?? "").trim();
+    const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
+    const absPath = resolveSafeChildPath(workspace.path, relativePath);
+    if (!(await exists(absPath))) {
+      return jsonResponse({ ok: true, path: relativePath, exists: false });
+    }
+    const info = await stat(absPath);
+    return jsonResponse({
+      ok: true,
+      path: relativePath,
+      exists: true,
+      kind: info.isFile() ? "file" : info.isDirectory() ? "dir" : "other",
+      size: info.size,
+      updatedAt: info.mtimeMs,
+    });
+  });
+
+  addRoute(routes, "GET", "/workspace/:id/files/raw", "client", async (ctx) => {
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const requested = (ctx.url.searchParams.get("path") ?? "").trim();
+    const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
+    const absPath = resolveSafeChildPath(workspace.path, relativePath);
+    if (!(await exists(absPath))) {
+      throw new ApiError(404, "file_not_found", "File not found");
+    }
+    const info = await stat(absPath);
+    if (!info.isFile()) {
+      throw new ApiError(404, "file_not_found", "File not found");
+    }
+
+    const headers = new Headers();
+    headers.set("Content-Type", contentTypeForPath(relativePath));
+    headers.set("Content-Length", String(info.size));
+    headers.set("Content-Disposition", `inline; filename="${basename(relativePath)}"`);
+    const stream = Readable.toWeb(createReadStream(absPath)) as unknown as ReadableStream;
+    return new Response(stream, { status: 200, headers });
+  });
+
+  addRoute(routes, "POST", "/workspace/:id/files/raw", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const requestedPath = String(body.path ?? "");
+    const relativePath = normalizeWorkspaceRelativePath(requestedPath, { allowSubdirs: true });
+    if (typeof body.dataBase64 !== "string") {
+      throw new ApiError(400, "invalid_payload", "dataBase64 must be a string");
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(body.dataBase64, "base64");
+    } catch {
+      throw new ApiError(400, "invalid_payload", "dataBase64 is invalid");
+    }
+    const maxBytes = FILE_SESSION_MAX_FILE_BYTES;
+    if (bytes.byteLength > maxBytes) {
+      throw new ApiError(413, "file_too_large", "File exceeds size limit", { maxBytes, size: bytes.byteLength });
+    }
+
+    const baseUpdatedAtRaw = body.baseUpdatedAt;
+    const baseUpdatedAt =
+      typeof baseUpdatedAtRaw === "number" && Number.isFinite(baseUpdatedAtRaw) ? baseUpdatedAtRaw : null;
+    const force = body.force === true;
+    const absPath = resolveSafeChildPath(workspace.path, relativePath);
+    const before = (await exists(absPath)) ? await stat(absPath) : null;
+    if (before && !before.isFile()) {
+      throw new ApiError(400, "invalid_path", "Path must point to a file");
+    }
+    const beforeUpdatedAt = before ? before.mtimeMs : null;
+    if (!force && beforeUpdatedAt !== null && baseUpdatedAt !== null && beforeUpdatedAt !== baseUpdatedAt) {
+      throw new ApiError(409, "conflict", "File changed since it was loaded", { baseUpdatedAt, currentUpdatedAt: beforeUpdatedAt });
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "workspace.file.write",
+      summary: `Write ${relativePath}`,
+      paths: [absPath],
+    });
+
+    await ensureDir(dirname(absPath));
+    const tmp = `${absPath}.tmp-${shortId()}`;
+    await writeFile(tmp, bytes);
+    await rename(tmp, absPath);
+    const after = await stat(absPath);
+    const revision = fileRevision(after);
+    recordWorkspaceFileEvent(workspace.id, { type: "write", path: relativePath, revision });
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "workspace.file.write",
+      target: absPath,
+      summary: `Wrote ${relativePath}`,
+      timestamp: Date.now(),
+    });
+    return jsonResponse({ ok: true, path: relativePath, bytes: bytes.byteLength, updatedAt: after.mtimeMs, revision });
+  });
+
   addRoute(routes, "POST", "/workspace/:id/files/content", "client", async (ctx) => {
     ensureWritable(config);
     requireClientScope(ctx, "collaborator");
@@ -2292,7 +2584,7 @@ function createRoutes(
     const requestedPath = String(body.path ?? "");
     const relativePath = normalizeWorkspaceRelativePath(requestedPath, { allowSubdirs: true });
     if (!isSupportedWorkspaceTextFilePath(relativePath)) {
-      throw new ApiError(400, "invalid_path", "Only Markdown and OpenCode plugin text files are supported");
+      throw new ApiError(400, "invalid_path", "Only supported text artifact files can be edited inline");
     }
 
     if (typeof body.content !== "string") {
@@ -2581,26 +2873,6 @@ function createRoutes(
   addRoute(routes, "GET", "/workspace/:id/mcp", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const items = await listMcp(workspace.path);
-
-    // 查询 opencode runtime 的 MCP 状态 (GET /mcp)
-    // 返回格式: { [name]: { status: "connected" | "disabled" | "failed" | "needs_auth" | "needs_client_registration", error?: string } }
-    try {
-      const mcpStatus = await fetchOpencodeJson(config, workspace, "/mcp", { method: "GET" });
-      if (mcpStatus && typeof mcpStatus === "object") {
-        for (const item of items) {
-          const info = (mcpStatus as Record<string, any>)[item.name];
-          if (info && typeof info === "object" && typeof info.status === "string") {
-            item.status = info.status;
-            if (typeof info.error === "string") {
-              item.statusError = info.error;
-            }
-          }
-        }
-      }
-    } catch {
-      // opencode runtime 不可用，保持 status 为 undefined
-    }
-
     return jsonResponse({ items });
   });
 
@@ -2700,7 +2972,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action,
-      target: "opencode.json",
+      target: "tron.json",
       summary: `${enabled ? "Enabled" : "Disabled"} MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -2915,6 +3187,7 @@ function createRoutes(
         409,
       );
     }
+    const configFingerprintBefore = await computeReloadFingerprint(workspace.path, "config");
     await importWorkspace(workspace, body, latestPreview);
     await recordAudit(workspace.path, {
       id: shortId(),
@@ -2925,7 +3198,9 @@ function createRoutes(
       summary: summarizeWorkspaceImportApplied(latestPreview),
       timestamp: Date.now(),
     });
-    emitReloadEvent(ctx.reloadEvents, workspace, "config", buildConfigTrigger(opencodeConfigPath(workspace.path)));
+    if (configFingerprintBefore !== await computeReloadFingerprint(workspace.path, "config")) {
+      emitReloadEvent(ctx.reloadEvents, workspace, "config", buildConfigTrigger(opencodeConfigPath(workspace.path)));
+    }
     return jsonResponse({ ok: true, preview: publicWorkspaceImportPreview(latestPreview) });
   });
 
@@ -3091,7 +3366,7 @@ async function readWorkspaceSessionSnapshot(
   input: { limit?: number },
 ) {
   try {
-    const [session, messages, todos, statuses, allQuestions] = await Promise.all([
+    const [session, messages, todos, statuses] = await Promise.all([
       fetchOpencodeJson(config, workspace, `/session/${encodeURIComponent(sessionId)}`, {
         method: "GET",
       }),
@@ -3105,14 +3380,8 @@ async function readWorkspaceSessionSnapshot(
       fetchOpencodeJson(config, workspace, "/session/status", {
         method: "GET",
       }),
-      fetchOpencodeJson(config, workspace, "/question", {
-        method: "GET",
-      }).catch(() => []),
     ]);
-    // 从全局 question 列表中筛出当前 session 的问题
-    const questions = Array.isArray(allQuestions) ? allQuestions : [];
-    const question = questions.find((q: any) => q.sessionID === sessionId) ?? null;
-    return buildSessionSnapshot({ session, messages, todos, statuses, question });
+    return buildSessionSnapshot({ session, messages, todos, statuses });
   } catch (error) {
     remapSessionReadError(error);
   }
@@ -3129,9 +3398,23 @@ async function resolveWorkspace(config: ServerConfig, id: string): Promise<Works
     throw new ApiError(403, "workspace_unauthorized", "Workspace is not authorized");
   }
   if (!config.readOnly) {
-    await repairCommands(resolvedWorkspace);
+    const ensured = await ensureWorkspaceFiles(resolvedWorkspace, workspace.preset ?? "starter");
+    const bootstrapReloadReasons = new Set<ReloadReason>(ensured.reloadReasons);
+    if (await repairCommands(resolvedWorkspace)) {
+      bootstrapReloadReasons.add("commands");
+    }
+    if (bootstrapReloadReasons.size > 0) {
+      await reloadBaselineRefreshers.get(config)?.(workspace.id, Array.from(bootstrapReloadReasons));
+      reloadOpencodeEngineAfterInternalBootstrap(config, { ...workspace, path: resolvedWorkspace });
+    }
   }
   return { ...workspace, path: resolvedWorkspace };
+}
+
+function reloadOpencodeEngineAfterInternalBootstrap(config: ServerConfig, workspace: WorkspaceInfo): void {
+  const connection = resolveWorkspaceOpencodeConnection(config, workspace);
+  if (!connection.baseUrl?.trim()) return;
+  void reloadOpencodeEngine(config, workspace).catch(() => undefined);
 }
 
 async function isAuthorizedRoot(workspacePath: string, roots: string[]): Promise<boolean> {
@@ -3293,9 +3576,9 @@ function normalizeOpencodeScope(value: string | null | undefined): "project" | "
 
 function resolveOpencodeConfigFilePath(scope: "project" | "global", workspaceRoot: string): string {
   if (scope === "global") {
-    const base = join(homedir(), ".config", "tron");
-    const jsoncPath = join(base, "tron.jsonc");
-    const jsonPath = join(base, "tron.json");
+    const base = join(homedir(), ".config", "opencode");
+    const jsoncPath = join(base, "opencode.jsonc");
+    const jsonPath = join(base, "opencode.json");
     if (existsSync(jsoncPath)) return jsoncPath;
     if (existsSync(jsonPath)) return jsonPath;
     return jsoncPath;
@@ -3343,26 +3626,26 @@ async function readOpenworkConfig(workspaceRoot: string): Promise<Record<string,
     const raw = await readFile(path, "utf8");
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    throw new ApiError(422, "invalid_json", "Failed to parse wudong.json");
+    throw new ApiError(422, "invalid_json", "Failed to parse openwork.json");
   }
 }
 
 function resolveOpencodeDirectory(workspace: WorkspaceInfo): string | null {
   const explicit = workspace.directory?.trim() ?? "";
-  if (explicit) return explicit;
-  if (workspace.workspaceType === "local") return workspace.path;
+  if (explicit) return normalizeOpencodeDirectory(explicit);
+  if (workspace.workspaceType === "local") return normalizeOpencodeDirectory(workspace.path);
   return null;
 }
 
-// HTTP header values cannot contain non-ASCII bytes. Workspace paths may
-// include CJK characters (e.g. /Users/foo/工作区/测试1), so percent-encode
-// them when needed. The OpenCode receiver already decodes this format —
-// mirrors apps/app/src/app/lib/opencode.ts:buildDirectoryHeader.
-function buildOpencodeDirectoryHeader(directory: string | null | undefined): string | null {
-  if (!directory) return null;
-  const trimmed = directory.trim();
-  if (!trimmed) return null;
-  return /[^\x00-\x7F]/.test(trimmed) ? encodeURIComponent(trimmed) : trimmed;
+function normalizeOpencodeDirectory(directory: string): string {
+  // OpenCode stores/list-filters Windows sessions by regular drive paths
+  // (`C:\Users\...`). Electron can persist local workspaces as extended-length
+  // paths (`\\?\C:\Users\...`); passing those through as the directory query
+  // makes OpenCode return an empty session list even though the sessions exist.
+  if (process.platform === "win32") {
+    return directory.replace(/^\\\\\?\\/, "").replace(/^\/\/\?\//, "");
+  }
+  return directory;
 }
 
 function buildOpencodeReloadUrl(baseUrl: string, directory?: string | null): string {
@@ -3531,7 +3814,7 @@ async function importWorkspace(workspace: WorkspaceInfo, payload: Record<string,
 
   if (
     input.openwork !== undefined &&
-    changedPath("openwork", workspaceImportRelativePath(workspace, openworkConfigPath(workspace.path)))
+    changedPath("wudong", workspaceImportRelativePath(workspace, openworkConfigPath(workspace.path)))
   ) {
     if (input.modes.openwork === "replace") {
       await writeOpenworkConfig(workspace.path, input.openwork, false);

@@ -157,11 +157,6 @@ export function OrgSettingsScreen() {
   const [allowedDomainsDraft, setAllowedDomainsDraft] = useState("");
   const [domainRestrictionsEnabled, setDomainRestrictionsEnabled] =
     useState(false);
-  const [allowNonCloudModelsEnabled, setAllowNonCloudModelsEnabled] =
-    useState(true);
-  const [allowZenModelEnabled, setAllowZenModelEnabled] = useState(true);
-  const [allowMultipleWorkspacesEnabled, setAllowMultipleWorkspacesEnabled] =
-    useState(true);
   const [domainEditModeEnabled, setDomainEditModeEnabled] = useState(false);
   const [desktopVersionOptions, setDesktopVersionOptions] = useState<string[]>(
     [],
@@ -179,8 +174,6 @@ export function OrgSettingsScreen() {
 
   const currentAllowedDomains =
     orgContext?.organization.allowedEmailDomains ?? null;
-  const currentDesktopAppRestrictions =
-    orgContext?.organization.desktopAppRestrictions ?? {};
   const isOwner = orgContext?.currentMember.isOwner ?? false;
   const draftAllowedDomains = useMemo(
     () => normalizeAllowedEmailDomainsInput(allowedDomainsDraft),
@@ -216,17 +209,6 @@ export function OrgSettingsScreen() {
     );
     setDomainRestrictionsEnabled(
       (orgContext.organization.allowedEmailDomains?.length ?? 0) > 0,
-    );
-    setAllowNonCloudModelsEnabled(
-      orgContext.organization.desktopAppRestrictions.disallowNonCloudModels !==
-        true,
-    );
-    setAllowZenModelEnabled(
-      orgContext.organization.desktopAppRestrictions.blockZenModel !== true,
-    );
-    setAllowMultipleWorkspacesEnabled(
-      orgContext.organization.desktopAppRestrictions.blockMultipleWorkspaces !==
-        true,
     );
     setDomainEditModeEnabled(false);
   }, [orgContext]);
@@ -392,15 +374,6 @@ export function OrgSettingsScreen() {
         allowedEmailDomains: domainRestrictionsEnabled
           ? draftAllowedDomains
           : null,
-        desktopAppRestrictions: {
-          ...(!allowNonCloudModelsEnabled
-            ? { disallowNonCloudModels: true }
-            : {}),
-          ...(!allowZenModelEnabled ? { blockZenModel: true } : {}),
-          ...(!allowMultipleWorkspacesEnabled
-            ? { blockMultipleWorkspaces: true }
-            : {}),
-        },
         ...(desktopVersionOptions.length > 0
           ? {
               allowedDesktopVersions: allDesktopVersionsAllowed
@@ -573,77 +546,6 @@ export function OrgSettingsScreen() {
               </div>
             </div>
           ) : null}
-        </DenCard>
-
-        <DenCard size="spacious" className="grid gap-6">
-          <div className="grid gap-2">
-            <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-gray-400">
-              Desktop app
-            </p>
-            <h2 className="text-[24px] font-semibold tracking-[-0.04em] text-gray-900">
-              Desktop restrictions
-            </h2>
-            <p className="text-[14px] text-gray-500">
-              Control which desktop-only options remain available after people
-              sign in to this workspace.
-            </p>
-          </div>
-
-          <div className="grid gap-4">
-            <div className="flex items-start justify-between gap-4 rounded-[24px] border border-gray-200 bg-white px-5 py-4">
-              <div className="grid gap-1 pr-4">
-                <p className="text-[15px] font-medium text-gray-900">
-                  Allow non-cloud deployed models
-                </p>
-                <p className="text-[13px] text-gray-500">
-                  Let signed-in desktop users access models that are not
-                  deployed through OpenWork Cloud.
-                </p>
-              </div>
-              <SettingsToggle
-                label="Allow non-cloud deployed models"
-                checked={allowNonCloudModelsEnabled}
-                disabled={!isOwner}
-                onChange={setAllowNonCloudModelsEnabled}
-              />
-            </div>
-
-            <div className="flex items-start justify-between gap-4 rounded-[24px] border border-gray-200 bg-white px-5 py-4">
-              <div className="grid gap-1 pr-4">
-                <p className="text-[15px] font-medium text-gray-900">
-                  Allow usage of OpenCode Zen model
-                </p>
-                <p className="text-[13px] text-gray-500">
-                  Let signed-in desktop users access the OpenCode Zen model in
-                  the desktop app.
-                </p>
-              </div>
-              <SettingsToggle
-                label="Allow usage of OpenCode Zen model"
-                checked={allowZenModelEnabled}
-                disabled={!isOwner}
-                onChange={setAllowZenModelEnabled}
-              />
-            </div>
-
-            <div className="flex items-start justify-between gap-4 rounded-[24px] border border-gray-200 bg-white px-5 py-4">
-              <div className="grid gap-1 pr-4">
-                <p className="text-[15px] font-medium text-gray-900">
-                  Allow users to configure multiple workspaces
-                </p>
-                <p className="text-[13px] text-gray-500">
-                  Let signed-in desktop users create or manage more than one
-                  workspace on their machine.
-                </p>
-              </div>
-              <SettingsToggle
-                label="Allow users to configure multiple workspaces"
-                checked={allowMultipleWorkspacesEnabled}
-                disabled={!isOwner}
-                onChange={setAllowMultipleWorkspacesEnabled}
-              />
-            </div>
-          </div>
         </DenCard>
 
         <DenCard size="spacious" className="grid gap-6">
