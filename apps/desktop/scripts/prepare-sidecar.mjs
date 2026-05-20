@@ -323,7 +323,7 @@ if (!shouldDownloadOpencode) {
   console.log(`OpenCode sidecar already present (${existingOpencodeVersion}).`);
 }
 
-if (shouldDownloadOpencode) {
+if (false) {  // opencode 下载已禁用，运行时走 --opencode-bin 注入
   if (!opencodeAsset || !opencodeUrl) {
     console.error(
       `No OpenCode asset configured for target ${resolvedTargetTriple ?? "unknown"}. Set OPENCODE_ASSET to override.`
@@ -512,8 +512,8 @@ const orchestratorVersion = (() => {
 
 const versions = {
   opencode: {
-    version: normalizedOpencodeVersion,
-    sha256: opencodeCandidatePath && existsSync(opencodeCandidatePath) ? sha256File(opencodeCandidatePath) : null,
+    version: "0.0.0",
+    sha256: "skipped",
   },
   "openwork-server": {
     version: openworkServerVersion,
