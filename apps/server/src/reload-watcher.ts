@@ -97,7 +97,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "tron.json" || name === "tron.jsonc") {
+          if (name === "wudong.json" || name === "wudong.jsonc") {
             record("config", {
               type: "config",
               name,

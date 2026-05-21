@@ -2,10 +2,10 @@ import { existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 export function opencodeConfigPath(workspaceRoot: string): string {
-  const jsoncPath = join(workspaceRoot, "tron.jsonc");
-  const jsonPath = join(workspaceRoot, "tron.json");
-  const hiddenJsoncPath = join(workspaceRoot, ".tron", "tron.jsonc");
-  const hiddenJsonPath = join(workspaceRoot, ".tron", "tron.json");
+  const jsoncPath = join(workspaceRoot, "wudong.jsonc");
+  const jsonPath = join(workspaceRoot, "wudong.json");
+  const hiddenJsoncPath = join(workspaceRoot, ".tron", "wudong.jsonc");
+  const hiddenJsonPath = join(workspaceRoot, ".tron", "wudong.json");
   if (existsSync(hiddenJsoncPath)) return hiddenJsoncPath;
   if (existsSync(hiddenJsonPath)) return hiddenJsonPath;
   if (existsSync(jsoncPath)) return jsoncPath;

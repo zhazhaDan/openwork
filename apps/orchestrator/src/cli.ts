@@ -664,7 +664,7 @@ async function resolveHostOpencodeGlobalConfigDir(): Promise<string | null> {
     );
   }
 
-  const files = ["tron.jsonc", "tron.json", "config.json", "AGENTS.md"];
+  const files = ["wudong.jsonc", "wudong.json", "config.json", "AGENTS.md"];
   for (const candidate of Array.from(
     new Set(candidates.map((item) => resolve(expandTildePath(item)))),
   )) {
@@ -1108,10 +1108,10 @@ async function ensureWorkspace(workspace: string): Promise<string> {
 
   // 检查 .tron/ 和根目录（向后兼容）是否已有配置
   const tronDir = join(resolved, ".tron");
-  const tronDirJsonc = join(tronDir, "tron.jsonc");
-  const tronDirJson = join(tronDir, "tron.json");
-  const rootJsonc = join(resolved, "tron.jsonc");
-  const rootJson = join(resolved, "tron.json");
+  const tronDirJsonc = join(tronDir, "wudong.jsonc");
+  const tronDirJson = join(tronDir, "wudong.json");
+  const rootJsonc = join(resolved, "wudong.jsonc");
+  const rootJson = join(resolved, "wudong.json");
   const hasConfig =
     await fileExists(tronDirJsonc) ||
     await fileExists(tronDirJson) ||

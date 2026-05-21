@@ -1046,7 +1046,7 @@ function buildConfigTrigger(path: string): ReloadTrigger {
   const name = path.split(/[\\/]/).filter(Boolean).pop();
   return {
     type: "config",
-    name: name || "tron.json",
+    name: name || "wudong.json",
     action: "updated",
     path,
   };
@@ -1742,7 +1742,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "config.patch",
-      target: "tron.json",
+      target: "wudong.json",
       summary: "Patched workspace config",
       timestamp: Date.now(),
     });
@@ -2383,7 +2383,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.add",
-      target: "tron.json",
+      target: "wudong.json",
       summary: `Added ${spec}`,
       timestamp: Date.now(),
     });
@@ -2416,7 +2416,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.remove",
-      target: "tron.json",
+      target: "wudong.json",
       summary: `Removed ${name}`,
       timestamp: Date.now(),
     });
@@ -2626,7 +2626,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.add",
-      target: "tron.json",
+      target: "wudong.json",
       summary: `Added MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -2656,7 +2656,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.remove",
-      target: "tron.json",
+      target: "wudong.json",
       summary: `Removed MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3294,8 +3294,8 @@ function normalizeOpencodeScope(value: string | null | undefined): "project" | "
 function resolveOpencodeConfigFilePath(scope: "project" | "global", workspaceRoot: string): string {
   if (scope === "global") {
     const base = join(homedir(), ".config", "tron");
-    const jsoncPath = join(base, "tron.jsonc");
-    const jsonPath = join(base, "tron.json");
+    const jsoncPath = join(base, "wudong.jsonc");
+    const jsonPath = join(base, "wudong.json");
     if (existsSync(jsoncPath)) return jsoncPath;
     if (existsSync(jsonPath)) return jsonPath;
     return jsoncPath;

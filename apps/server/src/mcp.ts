@@ -9,8 +9,8 @@ import { validateMcpConfig, validateMcpName } from "./validators.js";
 
 function globalOpenCodeConfigPath(): string {
   const base = join(homedir(), ".config", "tron");
-  const jsonc = join(base, "tron.jsonc");
-  const json = join(base, "tron.json");
+  const jsonc = join(base, "wudong.jsonc");
+  const json = join(base, "wudong.json");
   if (existsSync(jsonc)) return jsonc;
   if (existsSync(json)) return json;
   return jsonc; // fall back to jsonc (readJsoncFile handles missing files gracefully)

@@ -240,12 +240,12 @@ POST /workspaces/:id/activate  (host token required)
   +-- resolveOpencodeDirectory(workspace)
   +-- POST <opencodeBaseUrl>/instance/dispose?directory=<dir>
   |     -> OpenCode dispose 该 directory 的内存实例
-  |     -> 下次请求时重新加载 tron.jsonc 配置
+  |     -> 下次请求时重新加载 wudong.jsonc 配置
   +-- emitReloadEvent(ctx.reloadEvents, workspace, "config", trigger)
       -> SSE 推送给前端
 ```
 
-关键在于 Activate 触发 OpenCode reload，使 tron.jsonc 的修改生效。
+关键在于 Activate 触发 OpenCode reload，使 wudong.jsonc 的修改生效。
 
 ---
 
@@ -322,11 +322,11 @@ Rust watcher 检测变化 -> 分类 reason -> emit "openwork://reload-required" 
 |---|---|
 | OpenCode 连接 | 不同 URL -> Server 不同 mount -> 不同 x-opencode-directory |
 | SQLite 数据库 | 不同 `.tron/tron.db` (per workspace path) |
-| 配置文件 | 不同 `.tron/tron.jsonc` (per workspace path) |
+| 配置文件 | 不同 `.tron/wudong.jsonc` (per workspace path) |
 | Skills | 不同 `.tron/skills/` (per workspace path) |
 | Commands | 不同 `.tron/commands/` (per workspace path) |
-| LLM Provider | 不同 tron.jsonc 中的 provider 配置 |
-| MCP Server | 不同 tron.jsonc 中的 mcp 配置 |
+| LLM Provider | 不同 wudong.jsonc 中的 provider 配置 |
+| MCP Server | 不同 wudong.jsonc 中的 mcp 配置 |
 | SSE 连接 | 不同 SyncEntry，按 workspaceId 键控 |
 | React Query Cache | 不同 key，含 workspaceId 前缀 |
 | localStorage | 不同 key->sessionId 映射 |
@@ -359,8 +359,8 @@ OpenCode Server (单进程):
 | 创建新 session | 仅当前 workspace | opencodeClient 的 URL 已锁定 workspaceId |
 | 发送 prompt | 仅当前 workspace | URL mount + x-opencode-directory 双重保证 |
 | 查看历史 session | 仅当前 workspace | listSessions 返回当前 workspace 的数据 |
-| 切换 model | 仅当前 workspace | tron.jsonc 是 per-workspace |
-| 添加 MCP server | 仅当前 workspace | tron.jsonc 是 per-workspace |
+| 切换 model | 仅当前 workspace | wudong.jsonc 是 per-workspace |
+| 添加 MCP server | 仅当前 workspace | wudong.jsonc 是 per-workspace |
 | 修改 skills | 仅当前 workspace | .tron/skills/ 是 per-workspace |
 | Reload engine | 仅当前 workspace | POST /instance/dispose?directory=<this-ws> |
 | Server 崩溃 | 全部 workspace | 单实例共享，但会话数据在各自 DB 中安全 |
@@ -417,11 +417,11 @@ OpenCode Server (单进程):
 |  |                                                     | |
 |  |  x-opencode-directory: /User/A                      | |
 |  |    -> SQLite: /User/A/.tron/tron.db                 | |
-|  |    -> Config: /User/A/.tron/tron.jsonc              | |
+|  |    -> Config: /User/A/.tron/wudong.jsonc              | |
 |  |                                                     | |
 |  |  x-opencode-directory: /User/B                      | |
 |  |    -> SQLite: /User/B/.tron/tron.db                 | |
-|  |    -> Config: /User/B/.tron/tron.jsonc              | |
+|  |    -> Config: /User/B/.tron/wudong.jsonc              | |
 |  |                                                     | |
 |  |  Session/Message/Todo/Permission 全部按 dir 隔离    | |
 |  +-----------------------------------------------------+ |
