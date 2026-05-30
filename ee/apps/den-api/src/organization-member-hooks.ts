@@ -1,4 +1,4 @@
-import { eq, sql } from "@openwork-ee/den-db/drizzle"
+import { and, eq, isNull, sql } from "@openwork-ee/den-db/drizzle"
 import { MemberTable, OrganizationTable } from "@openwork-ee/den-db/schema"
 import { db } from "./db.js"
 import { syncInferenceAfterMemberChange } from "./inference.js"
@@ -27,7 +27,7 @@ async function countOrganizationMembers(organizationId: OrgId) {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(MemberTable)
-    .where(eq(MemberTable.organizationId, organizationId))
+    .where(and(eq(MemberTable.organizationId, organizationId), isNull(MemberTable.removedAt)))
   return Math.max(0, Number(row?.count ?? 0))
 }
 

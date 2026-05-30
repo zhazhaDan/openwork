@@ -166,7 +166,7 @@ export function NewProvidersToast() {
             className="font-medium underline underline-offset-2 transition-colors hover:text-dls-text/80"
             onClick={pickDefault}
           >
-            Pick a new default?
+            Select a model
           </button>
         </div>
 

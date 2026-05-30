@@ -336,6 +336,31 @@ select:disabled {
   animation: soft-pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* Quick horizontal shake used to nudge the user toward an action (e.g. when
+   Enter is pressed while a follow-up message needs Steer/Queue selection). */
+@keyframes ow-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-5px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+
+@utility animate-shake {
+  animation: ow-shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
 /* Highlight animation for just-saved command */
 @keyframes command-highlight {
   0% {
@@ -409,7 +434,7 @@ select:disabled {
   --card-foreground: var(--slate-12);
   --popover: var(--slate-1);
   --popover-foreground: var(--slate-12);
-  --primary: var(--blue-8);
+  --primary: var(--blue-10);
   --primary-foreground: var(--slate-12);
   --secondary: var(--slate-3);
   --secondary-foreground: var(--slate-12);

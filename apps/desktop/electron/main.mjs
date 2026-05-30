@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
+import net from "node:net";
 import { existsSync } from "node:fs";
 import {
   cp,
@@ -18,9 +19,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, nativeImage, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, nativeImage, nativeTheme, session, shell, systemPreferences } from "electron";
+import { configureFakeMediaForTests, installMediaPermissionHandlers } from "./media-permissions.mjs";
 import { registerMigrationIpc } from "./migration.mjs";
-import { startBrowserMcpServers } from "./browser-mcp.mjs";
 import { createRuntimeManager } from "./runtime.mjs";
 import { registerUpdaterIpc } from "./updater.mjs";
 import { exportWorkspaceConfig, importWorkspaceConfig } from "./workspace-archive.mjs";
@@ -42,6 +43,127 @@ const APP_IDENTIFIER = isDevMode ? DEV_APP_IDENTIFIER : TAURI_APP_IDENTIFIER;
 const RELEASE_DOWNLOAD_BASE_URL = "https://github.com/different-ai/openwork/releases/latest/download";
 const RELEASE_PAGE_URL = "https://github.com/different-ai/openwork/releases/latest";
 const DOCS_PAGE_URL = "https://openworklabs.com/docs";
+const BROWSER_PLUGIN = "opencode-chrome-devtools";
+const COMPUTER_USE_HELPER_APP_NAME = "OpenWork Computer Use.app";
+const COMPUTER_USE_HELPER_EXECUTABLE = "ComputerUse";
+
+function computerUseHelperExecutablePath() {
+  const appPath = computerUseHelperAppPath();
+  const explicitBinary = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
+  const candidates = [
+    explicitBinary,
+    appPath ? path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE) : null,
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function computerUseHelperAppPath() {
+  const explicitApp = process.env.OPENWORK_COMPUTER_USE_APP?.trim();
+  const candidates = [
+    explicitApp,
+    process.resourcesPath ? path.join(process.resourcesPath, "helpers", COMPUTER_USE_HELPER_APP_NAME) : null,
+    path.resolve(__dirname, "..", "resources", "helpers", COMPUTER_USE_HELPER_APP_NAME),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function getComputerUseMcpCommand() {
+  const helperExecutable = computerUseHelperExecutablePath();
+  if (helperExecutable) return [helperExecutable, "mcp"];
+
+  if (app.isPackaged) {
+    throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
+  }
+
+  if (process.env.OPENWORK_DEV_MODE === "1") {
+    return ["node", path.resolve(__dirname, "../../..", "packages/handsfree/bin/openwork-handsfree-computer-use.mjs"), "mcp"];
+  }
+  return ["npx", "-y", "@openwork/handsfree", "mcp"];
+}
+
+// ---------------------------------------------------------------------------
+// Permission checks — spawn the binary with --check, read stdout, done.
+// Fresh process = fresh TCC read = always accurate. No HTTP server needed.
+// ---------------------------------------------------------------------------
+
+function resolveComputerUseExecutable() {
+  // 1. Explicit env override.
+  const explicit = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
+  if (explicit && existsSync(explicit)) return explicit;
+
+  // 2. .app bundle (packaged builds + pnpm dev).
+  const appPath = computerUseHelperAppPath();
+  if (appPath) {
+    const bin = path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE);
+    if (existsSync(bin)) return bin;
+  }
+
+  // 3. Dev fallback — raw Swift build output.
+  if (!app.isPackaged) {
+    const swiftPkg = path.resolve(__dirname, "../../..", "packages/handsfree/native/HandsFree");
+    const devCandidates = [
+      path.join(swiftPkg, ".build", "release", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "arm64-apple-macosx", "release", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "debug", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "arm64-apple-macosx", "debug", "HandsFreeComputerUse"),
+    ];
+    for (const c of devCandidates) {
+      if (existsSync(c)) return c;
+    }
+  }
+
+  return null;
+}
+
+async function checkComputerUsePermissions() {
+  // Spawn binary --check → read JSON from stdout → exit. Always fresh.
+  const bin = resolveComputerUseExecutable();
+  if (!bin) {
+    return { ok: false, accessibility: false, screenRecording: false, error: "Helper binary not found. Run pnpm dev to build it." };
+  }
+  return spawnCheckPermissions(bin);
+}
+
+function spawnCheckPermissions(bin) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    const child = spawn(bin, ["--check"], { stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.on("error", () => resolve({ ok: false, accessibility: false, screenRecording: false, error: "Failed to run permission check." }));
+    child.on("close", () => {
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        resolve({
+          ok: parsed?.ok === true,
+          accessibility: parsed?.accessibility === true,
+          screenRecording: parsed?.screenRecording === true,
+        });
+      } catch {
+        resolve({ ok: false, accessibility: false, screenRecording: false, error: "Permission check returned invalid output." });
+      }
+    });
+  });
+}
+
+async function openComputerUseSetupApp() {
+  // Open the GUI. Use the .app bundle if available so macOS shows it as
+  // a real app with its own dock icon and permission identity.
+  const appPath = computerUseHelperAppPath();
+  if (appPath) {
+    const result = await shell.openPath(appPath);
+    if (result) console.error("[ComputerUse] shell.openPath error:", result);
+    return;
+  }
+
+  // Fallback: spawn the raw binary (opens the same GUI).
+  const bin = resolveComputerUseExecutable();
+  if (!bin) throw new Error("Helper binary not found. Run pnpm dev to build it.");
+  const child = spawn(bin, [], { detached: true, stdio: "ignore" });
+  child.unref();
+}
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
 // so in-place migration is a no-op for almost every file. Dev mode uses the
@@ -225,18 +347,58 @@ if (process.platform === "darwin" && APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty()
   app.dock.setIcon(APP_ICON_IMAGE);
 }
 
-// Optional: expose Chrome DevTools Protocol so external tools (raw CDP clients,
-// DevTools front-ends) can attach to this Electron instance for debugging.
-// NOT required for the built-in browser — that uses native webContents APIs.
-// Enable by setting OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=<port> before launch.
-const remoteDebugPort = Number.parseInt(
+// Expose Chrome DevTools Protocol so the opencode-chrome-devtools plugin can
+// drive the built-in browser panel.  Use OPENWORK_ELECTRON_REMOTE_DEBUG_PORT to
+// pin a specific port; otherwise probe for a free one starting at 9223.
+// Must resolve before app.commandLine.appendSwitch (before `ready`).
+function probePort(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1" }, () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+async function findFreeCdpPort(candidates) {
+  for (const port of candidates) {
+    if (await probePort(port)) return port;
+  }
+  return 0;
+}
+
+const explicitCdpPort = Number.parseInt(
   process.env.OPENWORK_ELECTRON_REMOTE_DEBUG_PORT?.trim() ?? "",
   10,
 );
-if (Number.isFinite(remoteDebugPort) && remoteDebugPort > 0) {
+const remoteDebugPort = Number.isFinite(explicitCdpPort) && explicitCdpPort > 0
+  ? explicitCdpPort
+  : await findFreeCdpPort([9223, 9224, 9225, 9226, 9227]);
+if (remoteDebugPort > 0) {
   app.commandLine.appendSwitch("remote-debugging-port", String(remoteDebugPort));
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 }
+// Make the resolved port available to the embedded server so it flows into
+// agent instructions via ensureOpenworkAgent → resolveAgentTemplate.
+process.env.OPENWORK_ELECTRON_REMOTE_DEBUG_PORT = String(remoteDebugPort);
+
+// Apply extra Chromium flags from ELECTRON_EXTRA_LAUNCH_ARGS.
+// Used in headless/Daytona environments to pass e.g. --disable-gpu.
+const extraLaunchArgs = (process.env.ELECTRON_EXTRA_LAUNCH_ARGS ?? "").trim();
+if (extraLaunchArgs) {
+  for (const arg of extraLaunchArgs.split(/\s+/)) {
+    const cleaned = arg.replace(/^--/, "");
+    if (!cleaned) continue;
+    const eqIdx = cleaned.indexOf("=");
+    if (eqIdx > 0) {
+      app.commandLine.appendSwitch(cleaned.slice(0, eqIdx), cleaned.slice(eqIdx + 1));
+    } else {
+      app.commandLine.appendSwitch(cleaned);
+    }
+  }
+}
+configureFakeMediaForTests(app, envFlagEnabled("OPENWORK_ELECTRON_FAKE_MEDIA"));
 const DEFAULT_DEN_BASE_URL = "https://app.openworklabs.com";
 const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:4096";
 const FORCE_DESKTOP_REQUIRE_SIGNIN = envFlagEnabled("OPENWORK_FORCE_SIGNIN");
@@ -246,34 +408,6 @@ let applicationMenuVisible = process.platform === "darwin";
 function envFlagEnabled(name) {
   const value = process.env[name]?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes" || value === "on";
-}
-
-function envFlagDisabled(name) {
-  const value = process.env[name]?.trim().toLowerCase();
-  return value === "0" || value === "false" || value === "off";
-}
-
-async function installReactDevToolsForDev() {
-  if (app.isPackaged || envFlagDisabled("OPENWORK_REACT_DEVTOOLS")) return;
-  try {
-    const mod = await import("electron-devtools-installer");
-    const installExtension =
-      typeof mod.installExtension === "function"
-        ? mod.installExtension
-        : typeof mod.default === "function"
-          ? mod.default
-          : typeof mod.default?.installExtension === "function"
-            ? mod.default.installExtension
-            : null;
-    const reactDevtools = mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
-    if (typeof installExtension !== "function" || !reactDevtools) {
-      throw new Error("electron-devtools-installer did not expose React DevTools");
-    }
-    const name = await installExtension(reactDevtools);
-    console.info(`[devtools] installed ${name}`);
-  } catch (error) {
-    console.warn("[devtools] failed to install React Developer Tools", error);
-  }
 }
 
 const EMPTY_WORKSPACE_LIST = Object.freeze({
@@ -342,7 +476,7 @@ let activeBrowserTabId = null;
 let browserViewVisible = false;
 let lastBrowserBounds = null;
 let browserTabCounter = 0;
-const BROWSER_DEFAULT_URL = "https://www.google.com";
+const BROWSER_DEFAULT_URL = "about:blank";
 const MENU_OVERLAY_HTML = "overlay.html";
 const MENU_OVERLAY_WIDTH = 196;
 const MENU_OVERLAY_HEIGHT = 176;
@@ -404,8 +538,7 @@ async function toggleSidebarFromNativeMenu() {
 
 function installApplicationMenu() {
   const isMac = process.platform === "darwin";
-  /** @type {import("electron").MenuItemConstructorOptions[]} */
-  const template = [
+  const template = /** @type {import("electron").MenuItemConstructorOptions[]} */ ([
     ...(isMac
       ? [
           {
@@ -518,7 +651,7 @@ function installApplicationMenu() {
         },
       ],
     },
-  ];
+  ]);
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -560,45 +693,48 @@ function getActiveWebContents() {
   return getActiveBrowserView()?.webContents ?? null;
 }
 
+function getBrowserTabLabel(title, url) {
+  if (title) {
+    return title;
+  }
+
+  if (url && url !== "about:blank") {
+    return url;
+  }
+
+  return "New tab";
+}
+
+function browserTabToPanelTab(tabId, tab) {
+  const webContents = tab.view.webContents;
+  const url = webContents.getURL();
+  const title = webContents.getTitle();
+  const isLoading = webContents.isLoading();
+
+  return {
+    id: tabId,
+    type: "browser",
+    label: getBrowserTabLabel(title, url),
+    url,
+    favicon: tab.favicon ?? null,
+    status: isLoading ? "loading" : "ready",
+    canGoBack: webContents.canGoBack(),
+    canGoForward: webContents.canGoForward(),
+  };
+}
+
 function listBrowserTabs() {
   return browserTabOrder
     .map((tabId) => {
       const tab = browserTabs.get(tabId);
       if (!tab || tab.view.webContents.isDestroyed()) return null;
-      return {
-        tabId,
-        url: tab.view.webContents.getURL(),
-        title: tab.view.webContents.getTitle(),
-        favicon: tab.favicon,
-        canGoBack: tab.view.webContents.canGoBack(),
-        canGoForward: tab.view.webContents.canGoForward(),
-        isLoading: tab.view.webContents.isLoading(),
-        isActive: tabId === activeBrowserTabId,
-      };
+      return browserTabToPanelTab(tabId, tab);
     })
     .filter(Boolean);
 }
 
 function browserStatePayload() {
-  const activeTab = getBrowserTab();
-  const activeWebContents = activeTab?.view.webContents;
-  const activeState = activeWebContents && !activeWebContents.isDestroyed()
-    ? {
-        url: activeWebContents.getURL(),
-        title: activeWebContents.getTitle(),
-        canGoBack: activeWebContents.canGoBack(),
-        canGoForward: activeWebContents.canGoForward(),
-        isLoading: activeWebContents.isLoading(),
-      }
-    : {
-        url: "",
-        title: "",
-        canGoBack: false,
-        canGoForward: false,
-        isLoading: false,
-      };
   return {
-    ...activeState,
     activeTabId: activeBrowserTabId,
     tabs: listBrowserTabs(),
   };
@@ -669,6 +805,7 @@ async function ensureMenuOverlayView() {
     webPreferences: {
       // Electron only runs ESM preload scripts reliably with sandbox disabled.
       // Keep the bridge isolated and node-free for the React overlay document.
+      backgroundThrottling: false,
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -791,6 +928,7 @@ function createBrowserTab(url = "about:blank", { select = true } = {}) {
   const tabId = createBrowserTabId();
   const view = new WebContentsView({
     webPreferences: {
+      backgroundThrottling: false,
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -807,6 +945,11 @@ function createBrowserTab(url = "about:blank", { select = true } = {}) {
   view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     void shell.openExternal(targetUrl);
     return { action: "deny" };
+  });
+  view.webContents.on("did-start-navigation", (_event, targetUrl, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && targetUrl !== "about:blank") {
+      sendToRenderer("openwork:browser:panel-opened");
+    }
   });
   view.webContents.on("did-navigate", () => sendBrowserState());
   view.webContents.on("did-navigate-in-page", () => sendBrowserState());
@@ -869,8 +1012,7 @@ function selectBrowserTab(tabId) {
   if (previousView && previousView !== getActiveBrowserView()) {
     detachBrowserView(previousView);
   }
-  _snapshotReset?.();
-  attachActiveBrowserView();
+    attachActiveBrowserView();
   sendBrowserState();
   return getBrowserTab(tabId);
 }
@@ -890,7 +1032,6 @@ function closeBrowserTab(tabId = activeBrowserTabId) {
       browserTabOrder[closingIndex - 1] ??
       null;
     activeBrowserTabId = nextTabId;
-    _snapshotReset?.();
     if (nextTabId) {
       attachActiveBrowserView();
     } else {
@@ -911,7 +1052,6 @@ function closeAllBrowserTabs() {
     .map((tabId) => browserTabs.get(tabId))
     .filter(Boolean);
   hideBrowserView();
-  _snapshotReset?.();
   browserTabs.clear();
   browserTabOrder = [];
   activeBrowserTabId = null;
@@ -948,9 +1088,10 @@ function sendBrowserState() {
  * Attach the browser view to the main window.
  * @param {object} bounds — { x, y, width, height }
  * @param {object} [opts]
- * @param {boolean} [opts.preloadDefault=true] — load default URL if the view has no URL
+ * @param {boolean} [opts.preloadDefault=false] - load default URL if the view has no URL
+ * @param {boolean} [opts.ensureTab=false] - create a blank tab if needed
  */
-function attachBrowserView(bounds, { preloadDefault = true, ensureTab = true } = {}) {
+function attachBrowserView(bounds, { preloadDefault = false, ensureTab = false } = {}) {
   if (!mainWindow) return;
   lastBrowserBounds = bounds;
   browserViewVisible = true;
@@ -976,15 +1117,12 @@ function hideBrowserView() {
   }
 }
 
-let _snapshotReset = null; // set by ensureBrowserMcpServers
-
 function destroyBrowserView() {
   hideBrowserView();
   const overlayView = menuOverlayView;
   menuOverlayView = null;
   menuOverlayRequest = null;
   try { overlayView?.webContents.close(); } catch { /* already destroyed */ }
-  _snapshotReset?.();
   for (const tab of browserTabs.values()) {
     try { tab.view.webContents.close(); } catch { /* already destroyed */ }
   }
@@ -993,120 +1131,6 @@ function destroyBrowserView() {
   activeBrowserTabId = null;
   lastBrowserBounds = null;
   sendBrowserState();
-}
-
-// ── In-process browser MCP servers ─────────────────────────────────────
-// Two MCP servers run inside the Electron main process:
-//   "openwork-browser" — controls the embedded WebContentsView
-//   "chrome"           — connects to the user's external Chrome
-// Both are exposed as HTTP endpoints.  OpenCode connects as a remote client.
-let browserMcpPorts = null; // { builtinPort, externalPort, stop }
-
-async function ensureBrowserMcpServers() {
-  if (browserMcpPorts) return browserMcpPorts;
-
-  try {
-    browserMcpPorts = await startBrowserMcpServers({
-      getWebContents: () => getActiveWebContents(),
-      listTabs: () => listBrowserTabs(),
-      createTab: async (url) => createBrowserTab(url ?? "about:blank", { select: true }).tabId,
-      closeTab: async (tabId) => closeBrowserTab(tabId),
-      selectTab: async (tabId) => selectBrowserTab(tabId).tabId,
-      onBuiltinToolCall: async (toolName) => {
-        // Ensure the browser panel is open so the agent can interact.
-        // preloadDefault: false — the tool will navigate on its own.
-        if (!mainWindow) return;
-        if (!browserViewVisible) {
-          attachBrowserView(
-            { x: 0, y: 0, width: 0, height: 0 },
-            { preloadDefault: false, ensureTab: toolName !== "create_page" },
-          );
-        }
-        sendToRenderer("openwork:browser:panel-opened");
-      },
-      onHideBrowser: () => {
-        hideBrowserView();
-        sendToRenderer("openwork:browser:panel-closed");
-      },
-    });
-    // Wire snapshot reset so destroyBrowserView clears stale uid state
-    if (browserMcpPorts._snapshotReset) {
-      _snapshotReset = browserMcpPorts._snapshotReset;
-    }
-    console.log(`[browser-mcp] Built-in browser MCP at http://127.0.0.1:${browserMcpPorts.builtinPort}/mcp`);
-    console.log(`[browser-mcp] External Chrome MCP at http://127.0.0.1:${browserMcpPorts.externalPort}/mcp`);
-  } catch (err) {
-    console.error("[browser-mcp] Failed to start:", err);
-    return null;
-  }
-  return browserMcpPorts;
-}
-
-/**
- * Inject the in-process MCP servers as remote entries in opencode.json.
- * Replaces any legacy local chrome-devtools entries.
- *
- * Browser MCP servers prefer stable localhost ports (64883/64884), so this
- * remains stable across app restarts instead of writing a fresh random port
- * every time.
- */
-async function seedBrowserMcpConfig(workspaceDir) {
-  const ports = await ensureBrowserMcpServers();
-  if (!ports) return;
-
-  const jsoncPath = path.join(workspaceDir, "opencode.jsonc");
-  const jsonPath = path.join(workspaceDir, "opencode.json");
-  const configPath = existsSync(jsoncPath) ? jsoncPath : existsSync(jsonPath) ? jsonPath : null;
-
-  let config;
-  if (configPath) {
-    try { config = JSON.parse(await readFile(configPath, "utf8")); } catch { return; }
-  } else {
-    config = { $schema: "https://opencode.ai/config.json" };
-  }
-
-  if (!config.mcp || typeof config.mcp !== "object") config.mcp = {};
-
-  let changed = !configPath;
-
-  const builtinUrl = `http://127.0.0.1:${ports.builtinPort}/mcp`;
-  if (config.mcp["openwork-browser"]?.url !== builtinUrl) {
-    config.mcp["openwork-browser"] = { type: "remote", url: builtinUrl };
-    changed = true;
-  }
-
-  const externalUrl = `http://127.0.0.1:${ports.externalPort}/mcp`;
-  if (config.mcp["chrome"]?.url !== externalUrl) {
-    config.mcp["chrome"] = { type: "remote", url: externalUrl };
-    changed = true;
-  }
-
-  // UI control bridge
-  try {
-    const uiDiscovery = JSON.parse(await readFile(path.join(app.getPath("userData"), "openwork-ui-control.json"), "utf8"));
-    if (uiDiscovery?.baseUrl) {
-      const uiUrl = `${uiDiscovery.baseUrl}/mcp`;
-      if (config.mcp["openwork-ui"]?.url !== uiUrl) {
-        config.mcp["openwork-ui"] = { type: "remote", url: uiUrl };
-        changed = true;
-      }
-    }
-  } catch {
-    // UI control bridge not started yet — skip.
-  }
-
-  // Remove legacy entries
-  for (const key of ["chrome-devtools", "control-chrome"]) {
-    if (config.mcp[key]) {
-      delete config.mcp[key];
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    const targetPath = configPath || jsoncPath;
-    await writeFile(targetPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  }
 }
 
 function normalizePlatform(value) {
@@ -1415,6 +1439,30 @@ function defaultWorkspaceOpenworkConfig(workspacePath, preset = null) {
   };
 }
 
+async function workspaceOpencodeConfigPath(workspacePath) {
+  const candidates = [
+    path.join(workspacePath, "opencode.jsonc"),
+    path.join(workspacePath, "opencode.json"),
+    path.join(workspacePath, ".opencode", "opencode.jsonc"),
+    path.join(workspacePath, ".opencode", "opencode.json"),
+  ];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return candidates[0];
+}
+
+async function ensureDefaultWorkspaceOpencodeConfig(workspacePath) {
+  const configPath = await workspaceOpencodeConfigPath(workspacePath);
+  if (await pathExists(configPath)) return false;
+  await writeJsonFileAtomic(configPath, {
+    $schema: "https://opencode.ai/config.json",
+    default_agent: "openwork",
+    plugin: [BROWSER_PLUGIN],
+  });
+  return true;
+}
+
 async function normalizeLocalWorkspacePath(rawPath) {
   const trimmed = String(rawPath ?? "").trim();
   if (!trimmed) return "";
@@ -1654,12 +1702,50 @@ const runtimeManager = createRuntimeManager({
 });
 
 let runtimeDisposedForQuit = false;
+let runtimeDisposeInProgress = false;
 let runtimeBootstrapPromise = null;
 
+function showShutdownScreen() {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.show();
+    win.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { height: 100%; margin: 0; background: #0b0b0f; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { display: grid; place-items: center; }
+      main { display: grid; gap: 10px; justify-items: center; }
+      .spinner { width: 22px; height: 22px; border: 2px solid rgba(244,244,245,.25); border-top-color: #f4f4f5; border-radius: 50%; animation: spin .9s linear infinite; }
+      .title { font-size: 15px; font-weight: 600; }
+      .body { font-size: 13px; color: #a1a1aa; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="title">Stopping OpenWork services</div>
+      <div class="body">Closing local workers and background services...</div>
+    </main>
+  </body>
+</html>`)}`);
+  } catch {
+    // Ignore renderer teardown races during quit.
+  }
+}
+
 async function disposeRuntimeBeforeQuit() {
-  if (runtimeDisposedForQuit) return;
-  runtimeDisposedForQuit = true;
-  await runtimeManager.dispose().catch(() => undefined);
+  if (runtimeDisposedForQuit || runtimeDisposeInProgress) return;
+  runtimeDisposeInProgress = true;
+  try {
+    await runtimeManager.dispose().catch(() => undefined);
+    runtimeDisposedForQuit = true;
+  } finally {
+    runtimeDisposeInProgress = false;
+  }
 }
 
 function assertOpenworkServerReady(info) {
@@ -2088,10 +2174,9 @@ async function handleDesktopInvoke(event, command, ...args) {
         workspaceType: "local",
       });
       await mkdir(path.join(folderPath, ".opencode"), { recursive: true });
+      await ensureDefaultWorkspaceOpencodeConfig(folderPath);
       await writeWorkspaceOpenworkConfig(folderPath, defaultWorkspaceOpenworkConfig(folderPath, preset));
 
-      // Clean up any legacy browser MCP entries from the new workspace config
-      await seedBrowserMcpConfig(folderPath);
       return mutateWorkspaceState((state) => {
         const workspacePathKey = normalizeWorkspacePathKey(workspace.path);
         state.workspaces = state.workspaces.filter(
@@ -2194,9 +2279,12 @@ async function handleDesktopInvoke(event, command, ...args) {
           const directory = typeof nextWorkspace.directory === "string" && nextWorkspace.directory.trim()
             ? nextWorkspace.directory.trim()
             : null;
-          let remoteWorkspaceId = typeof nextWorkspace.openworkWorkspaceId === "string" && nextWorkspace.openworkWorkspaceId.trim()
-            ? nextWorkspace.openworkWorkspaceId.trim()
-            : parseOpenworkWorkspaceIdFromUrl(rawHostUrl) || parseOpenworkWorkspaceIdFromUrl(nextBaseUrl);
+          const parsedWorkspaceId = parseOpenworkWorkspaceIdFromUrl(rawHostUrl) || parseOpenworkWorkspaceIdFromUrl(nextBaseUrl);
+          let remoteWorkspaceId = parsedWorkspaceId || (
+            typeof nextWorkspace.openworkWorkspaceId === "string" && nextWorkspace.openworkWorkspaceId.trim()
+              ? nextWorkspace.openworkWorkspaceId.trim()
+              : null
+          );
           let remoteWorkspaceName = nextWorkspace.openworkWorkspaceName ?? null;
           if (!remoteWorkspaceId) {
             const discovered = await discoverOpenworkWorkspace({
@@ -2390,6 +2478,24 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
       return ["npx", "-y", "openwork-ui-mcp"];
     }
+    case "getComputerUseMcpCommand": {
+      return getComputerUseMcpCommand();
+    }
+    case "checkComputerUsePermissions": {
+      // Spawn --check → fresh TCC read → always accurate.
+      return checkComputerUsePermissions();
+    }
+    case "openComputerUsePermissionSetup": {
+      // Open the GUI app. Returns immediately — React shows "verify" CTA.
+      await openComputerUseSetupApp();
+      // Return a fresh check so the UI shows the current state.
+      return checkComputerUsePermissions();
+    }
+    case "openComputerUsePermissionSettings": {
+      // Legacy: open the setup app (same as above).
+      await openComputerUseSetupApp();
+      return checkComputerUsePermissions();
+    }
     case "getOpenworkUiMcpEnvironment": {
       return {
         OPENWORK_UI_CONTROL_DISCOVERY: path.join(app.getPath("userData"), "openwork-ui-control.json"),
@@ -2569,10 +2675,12 @@ async function handleDesktopInvoke(event, command, ...args) {
       const url = String(args[0] ?? "").trim();
       const init = args[1] ?? {};
       if (!url) throw new Error("URL is required.");
+      const timeoutMs = Number(init.timeoutMs);
       const response = await fetch(url, {
         method: typeof init.method === "string" ? init.method : undefined,
         headers: init.headers && typeof init.headers === "object" ? init.headers : undefined,
         body: typeof init.body === "string" ? init.body : undefined,
+        signal: Number.isFinite(timeoutMs) && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined,
       });
       return {
         status: response.status,
@@ -2598,10 +2706,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       return applyNativeTheme(String(args[0]));
     case "__setApplicationMenuVisible":
       return setApplicationMenuVisible(args[0]);
-    case "getBrowserMcpPorts":
-      return browserMcpPorts
-        ? { builtinPort: browserMcpPorts.builtinPort, externalPort: browserMcpPorts.externalPort }
-        : null;
     default:
       throw new Error(`Electron desktop bridge method is not implemented yet: ${command}`);
   }
@@ -2770,6 +2874,9 @@ async function createMainWindow() {
     ...windowAppearanceOptions,
     ...(APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty() ? { icon: APP_ICON_IMAGE } : {}),
     webPreferences: {
+      // The renderer owns session dispatch + event streams; keep it running
+      // while hidden/minimized so background tasks are not interrupted.
+      backgroundThrottling: false,
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
@@ -2834,6 +2941,17 @@ ipcMain.handle("openwork:shell:relaunch", async () => {
   app.exit(0);
 });
 ipcMain.handle("openwork:system:architecture", async () => resolveArchitectureInfo());
+ipcMain.handle("openwork:system:microphoneStatus", async () => {
+  if (process.platform !== "darwin") return { platform: process.platform, status: "not-mac" };
+  return { platform: process.platform, status: systemPreferences.getMediaAccessStatus("microphone") };
+});
+ipcMain.handle("openwork:system:askMicrophoneAccess", async () => {
+  if (process.platform !== "darwin") return { platform: process.platform, granted: true, status: "not-mac" };
+  const before = systemPreferences.getMediaAccessStatus("microphone");
+  const granted = await systemPreferences.askForMediaAccess("microphone");
+  const after = systemPreferences.getMediaAccessStatus("microphone");
+  return { platform: process.platform, before, after, granted };
+});
 
 // ── Embedded browser IPC ────────────────────────────────────────────────
 ipcMain.handle("openwork:browser:show", (_event, bounds) => attachBrowserView(bounds));
@@ -2897,6 +3015,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", (event) => {
     if (runtimeDisposedForQuit) return;
     event.preventDefault();
+    if (runtimeDisposeInProgress) return;
+    showShutdownScreen();
     void Promise.all([disposeRuntimeBeforeQuit(), stopUiControlServer()]).finally(() => app.quit());
   });
 
@@ -2917,8 +3037,8 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    installMediaPermissionHandlers(session, () => mainWindow);
     installApplicationMenu();
-    await installReactDevToolsForDev();
     await runtimeManager.prepareFreshRuntime().catch(() => undefined);
 
     // Use Tauri's existing workspace state file as canonical so rollback and
@@ -2932,20 +3052,6 @@ if (!app.requestSingleInstanceLock()) {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     }));
-
-    // Start in-process browser MCP servers and inject stable endpoints into
-    // workspace configs.
-    ensureBrowserMcpServers().then(async (ports) => {
-      if (!ports) return;
-      try {
-        const wsState = await readWorkspaceState();
-        for (const ws of wsState.workspaces ?? []) {
-          if (ws.path && ws.workspaceType === "local") {
-            await seedBrowserMcpConfig(ws.path).catch(() => {});
-          }
-        }
-      } catch {}
-    }).catch((err) => console.warn("[browser-mcp] boot error:", err));
 
     queueDeepLinks(forwardedDeepLinks(process.argv));
     const win = await createMainWindow();

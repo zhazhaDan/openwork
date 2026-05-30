@@ -1038,7 +1038,7 @@ async function main() {
   log(" ", `${memberIdsByEmail.size} members · ${teamIdsByName.size} teams · ${seededPlugins} plugins · ${seededObjects} config objects`)
   console.log()
   log("→", `login: ${DEMO_OWNER_EMAIL} / ${DEMO_OWNER_PASSWORD}`)
-  log("→", `open: /organization or /o/${DEMO_ORG_SLUG}/dashboard`)
+  log("→", "open: /organization or /dashboard")
   console.log()
 }
 

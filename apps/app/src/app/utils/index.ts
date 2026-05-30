@@ -810,6 +810,18 @@ function buildToolTitle(state: any, toolName: string): string {
     return "Task";
   }
 
+  if (lower === "question") {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    const first = questions[0];
+    if (first && typeof first === "object") {
+      const record = first as Record<string, unknown>;
+      const header = normalizeStepText(record.header);
+      const question = normalizeStepText(record.question);
+      return truncateStepText(header || question || "Asked a question", 56);
+    }
+    return "Asked a question";
+  }
+
   if (lower === "todowrite") {
     return "Update todo list";
   }
@@ -870,6 +882,18 @@ function buildToolDetail(state: any, toolName: string): string | undefined {
     if (description) return truncateStepText(description, 80);
     const agent = formatAgentLabel(pick("subagent_type"));
     if (agent) return `${agent} agent`;
+  }
+
+  if (lower === "question") {
+    const questions = Array.isArray(input.questions) ? input.questions.length : 0;
+    const answers = Array.isArray(state?.output)
+      ? state.output
+      : state?.output && typeof state.output === "object" && Array.isArray(state.output.answers)
+        ? state.output.answers
+        : null;
+    if (answers) return "Answered";
+    if (questions > 1) return `${questions} questions`;
+    return undefined;
   }
 
   if (lower === "todowrite" || lower === "todoread") {

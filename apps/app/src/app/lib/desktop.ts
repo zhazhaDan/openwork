@@ -25,6 +25,12 @@ export type {
 } from "./desktop-types";
 
 import type { WorkspaceList } from "./desktop-types";
+import type { BrowserPanelTab } from "../../react-app/domains/session/panel/panel-tab-store";
+
+export type BrowserStatePayload = {
+  activeTabId?: string | null;
+  tabs?: BrowserPanelTab[];
+};
 
 // ---------------------------------------------------------------------------
 // Electron bridge surface
@@ -50,6 +56,17 @@ declare global {
           version: string;
           downloadUrl: string;
           releaseUrl: string;
+        }>;
+        getMicrophoneStatus?: () => Promise<{
+          platform: string;
+          status: string;
+        }>;
+        askMicrophoneAccess?: () => Promise<{
+          platform: string;
+          before?: string;
+          after?: string;
+          status?: string;
+          granted: boolean;
         }>;
       };
       migration?: {
@@ -88,68 +105,16 @@ declare global {
         forward?: () => Promise<void>;
         reload?: () => Promise<void>;
         setBounds?: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>;
-        getState?: () => Promise<{
-          url: string;
-          title: string;
-          canGoBack: boolean;
-          canGoForward: boolean;
-          isLoading: boolean;
-          activeTabId?: string | null;
-          tabs?: Array<{
-            tabId: string;
-            url: string;
-            title: string;
-            favicon?: string | null;
-            canGoBack: boolean;
-            canGoForward: boolean;
-            isLoading: boolean;
-            isActive: boolean;
-          }>;
-        } | null>;
+        getState?: () => Promise<BrowserStatePayload | null>;
         createTab?: (url?: string) => Promise<{ tabId: string }>;
         closeTab?: (tabId: string) => Promise<string | null>;
         closeAllTabs?: () => Promise<string[]>;
         selectTab?: (tabId: string) => Promise<string>;
-        reorderTabs?: (tabIds: string[]) => Promise<Array<{
-          tabId: string;
-          url: string;
-          title: string;
-          favicon?: string | null;
-          canGoBack: boolean;
-          canGoForward: boolean;
-          isLoading: boolean;
-          isActive: boolean;
-        }>>;
-        listTabs?: () => Promise<Array<{
-          tabId: string;
-          url: string;
-          title: string;
-          favicon?: string | null;
-          canGoBack: boolean;
-          canGoForward: boolean;
-          isLoading: boolean;
-          isActive: boolean;
-        }>>;
+        reorderTabs?: (tabIds: string[]) => Promise<BrowserPanelTab[]>;
+        listTabs?: () => Promise<BrowserPanelTab[]>;
         showTabContextMenu?: (tabId: string, point?: { x: number; y: number }) => Promise<void>;
         destroy?: () => Promise<void>;
-        onStateChange?: (callback: (state: {
-          url: string;
-          title: string;
-          canGoBack: boolean;
-          canGoForward: boolean;
-          isLoading: boolean;
-          activeTabId?: string | null;
-          tabs?: Array<{
-            tabId: string;
-            url: string;
-            title: string;
-            favicon?: string | null;
-            canGoBack: boolean;
-            canGoForward: boolean;
-            isLoading: boolean;
-            isActive: boolean;
-          }>;
-        }) => void) => () => void;
+        onStateChange?: (callback: (state: BrowserStatePayload) => void) => () => void;
         onPanelOpened?: (callback: () => void) => () => void;
         onPanelClosed?: (callback: () => void) => () => void;
       };
@@ -276,6 +241,46 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     headers: result.headers,
   });
 };
+
+export async function desktopFetchViaMain(input: RequestInfo | URL, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+  let url: string;
+  let method: string | undefined;
+  let headers: Record<string, string> | undefined;
+  let body: string | undefined;
+
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    url = input.url;
+    method = init?.method ?? input.method;
+    const headersSource = init?.headers ? new Headers(init.headers) : input.headers;
+    headers = Object.fromEntries(headersSource.entries());
+    if (typeof init?.body === "string") {
+      body = init.body;
+    } else if (input.body) {
+      body = await input.clone().text();
+    }
+  } else {
+    url = typeof input === "string" ? input : input.toString();
+    method = init?.method;
+    headers = init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : undefined;
+    body = typeof init?.body === "string" ? init.body : undefined;
+  }
+
+  const result = await invokeElectronHelper<{
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+    body: string;
+  }>("__fetch", url, { method, headers, body, timeoutMs });
+
+  const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+  const responseBody = NULL_BODY_STATUSES.has(result.status) ? null : result.body;
+
+  return new Response(responseBody, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Convenience wrappers

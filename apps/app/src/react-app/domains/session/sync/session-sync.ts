@@ -1,18 +1,28 @@
 import type { UIMessage } from "ai";
-import type { Part, PermissionRequest, SessionStatus, Todo } from "@opencode-ai/sdk/v2/client";
+import type { FilePart, Part, PermissionRequest, QuestionRequest, SessionStatus, Todo } from "@opencode-ai/sdk/v2/client";
 
 import { getReactQueryClient } from "../../../infra/query-client";
-import { createClient } from "../../../../app/lib/opencode";
-import { normalizeEvent } from "../../../../app/utils";
-import type { OpencodeEvent, PendingPermission } from "../../../../app/types";
-import { snapshotToUIMessages } from "./usechat-adapter";
-import type { OpenworkSessionSnapshot } from "../../../../app/lib/openwork-server";
+import { createClient } from "@/app/lib/opencode";
+import { normalizeEvent } from "@/app/utils";
+import { SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX, type OpencodeEvent, type PendingPermission, type PendingQuestion } from "@/app/types";
+import { createSessionErrorUIMessage, describeOpencodeSessionError, snapshotToUIMessages } from "./usechat-adapter";
+import {
+  parseDynamicToolUIPart,
+  parseStructuredOutputUIPart,
+  STRUCTURED_OUTPUT_TOOL,
+} from "./parse-tool-parts";
+import type { OpenworkSessionSnapshot } from "@/app/lib/openwork-server";
 import { reconcileTranscriptMessages } from "./transcript-reconcile";
+import {
+  useSessionActivityStore,
+} from "../status/session-activity-store";
 
 type SyncOptions = {
   workspaceId: string;
   baseUrl: string;
   openworkToken: string;
+  onSessionUpdated?: (update: { sessionId: string; info: Record<string, unknown> }) => void;
+  onSessionStatus?: (update: { sessionId: string; status: SessionStatus }) => void;
 };
 
 export type PendingDelta = {
@@ -30,6 +40,8 @@ type SyncEntry = {
   disposeTimer: ReturnType<typeof setTimeout> | null;
   trackedSessionRefs: Map<string, number>;
   retainedSessionTimers: Map<string, ReturnType<typeof setTimeout>>;
+  sessionUpdatedListeners: Set<NonNullable<SyncOptions["onSessionUpdated"]>>;
+  sessionStatusListeners: Set<NonNullable<SyncOptions["onSessionStatus"]>>;
   pendingDeltas: Map<string, { messageId: string; reasoning: boolean; text: string }>;
   // Coalesce rapid-fire delta events from the SSE stream into one cache
   // commit per animation frame. Without this, a long response produces a
@@ -53,6 +65,8 @@ export const todoKey = (workspaceId: string, sessionId: string) =>
   ["react-session-todos", workspaceId, sessionId] as const;
 export const permissionKey = (workspaceId: string, sessionId: string) =>
   ["react-session-permissions", workspaceId, sessionId] as const;
+export const questionKey = (workspaceId: string, sessionId: string) =>
+  ["react-session-questions", workspaceId, sessionId] as const;
 
 function syncKey(input: SyncOptions) {
   return `${input.workspaceId}:${input.baseUrl}:${input.openworkToken}`;
@@ -78,8 +92,76 @@ function isTrackedSession(entry: SyncEntry, sessionId: string) {
   return (entry.trackedSessionRefs.get(sessionId) ?? 0) > 0 || entry.retainedSessionTimers.has(sessionId);
 }
 
+function getSessionUpdatedInfo(event: OpencodeEvent) {
+  if (event.type !== "session.updated") return null;
+  const props = event.properties;
+  if (!props || typeof props !== "object") return null;
+  const record = props as { sessionID?: unknown; info?: unknown };
+  const info = record.info;
+  if (!info || typeof info !== "object") return null;
+  const sessionId = typeof record.sessionID === "string"
+    ? record.sessionID
+    : typeof (info as { id?: unknown }).id === "string"
+      ? (info as { id: string }).id
+      : "";
+  if (!sessionId) return null;
+  return { sessionId, info: info as Record<string, unknown> };
+}
+
 function isLiveStatus(status: SessionStatus | null | undefined) {
   return status?.type === "busy" || status?.type === "retry";
+}
+
+function messageHasVisibleAssistantOutput(message: UIMessage) {
+  if (message.role !== "assistant") return false;
+  return message.parts.some((part) => {
+    if ("text" in part && typeof part.text === "string") return part.text.trim().length > 0;
+    return part.type === "dynamic-tool" || part.type === "file";
+  });
+}
+
+function assistantOutputAfterLatestUser(messages: UIMessage[]) {
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  return messages.slice(lastUserIndex + 1).some(messageHasVisibleAssistantOutput);
+}
+
+function sessionIdFromProperties(properties: unknown) {
+  if (!properties || typeof properties !== "object") return "";
+  const sessionID = (properties as { sessionID?: unknown }).sessionID;
+  return typeof sessionID === "string" ? sessionID : "";
+}
+
+function sessionErrorFromProperties(properties: unknown) {
+  if (!properties || typeof properties !== "object") return undefined;
+  return (properties as { error?: unknown }).error;
+}
+
+function latestAssistantMessageId(messages: UIMessage[]) {
+  // The snapshot keys each error to its errored assistant message id, so the
+  // live event must resolve to that same id to dedupe on reload. Skipping
+  // synthetic error messages ensures a follow-up error keys off the real
+  // assistant turn rather than overwriting the previous error message.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    if (message.id.startsWith(SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX)) continue;
+    return message.id;
+  }
+  return null;
+}
+
+function partHasVisibleAssistantOutput(part: Part) {
+  if (part.type === "text" && part.synthetic) return false;
+  if (part.type === "text" && part.ignored) return false;
+  const partType = String(part.type);
+  if ("text" in part && typeof part.text === "string" && part.text.trim().length > 0) return true;
+  return partType === "tool" || partType === "file" || partType === "agent";
 }
 
 function clearTrackedSession(input: SyncOptions, entry: SyncEntry, sessionId: string) {
@@ -126,7 +208,15 @@ function withReceivedAt(permission: PermissionRequest, receivedAt: number): Pend
   return { ...permission, receivedAt };
 }
 
+function questionWithReceivedAt(question: QuestionRequest, receivedAt: number): PendingQuestion {
+  return { ...question, receivedAt };
+}
+
 function sortPermissions(a: PendingPermission, b: PendingPermission) {
+  return a.receivedAt - b.receivedAt || a.id.localeCompare(b.id);
+}
+
+function sortQuestions(a: PendingQuestion, b: PendingQuestion) {
   return a.receivedAt - b.receivedAt || a.id.localeCompare(b.id);
 }
 
@@ -136,6 +226,12 @@ export function seedPermissionState(
   permissions: PermissionRequest[],
   options: { snapshotStartedAt?: number } = {},
 ) {
+  useSessionActivityStore.getState().replaceWaitingRequests(
+    workspaceId,
+    sessionId,
+    "permission",
+    permissions.flatMap((permission) => permission.sessionID === sessionId ? [permission.id] : []),
+  );
   const queryClient = getReactQueryClient();
   const now = Date.now();
   queryClient.setQueryData<PendingPermission[]>(permissionKey(workspaceId, sessionId), (current = []) => {
@@ -158,11 +254,93 @@ export function seedPermissionState(
   });
 }
 
+export function seedQuestionState(
+  workspaceId: string,
+  sessionId: string,
+  questions: QuestionRequest[],
+  options: { snapshotStartedAt?: number } = {},
+) {
+  useSessionActivityStore.getState().replaceWaitingRequests(
+    workspaceId,
+    sessionId,
+    "question",
+    questions.flatMap((question) => question.sessionID === sessionId ? [question.id] : []),
+  );
+  const queryClient = getReactQueryClient();
+  const now = Date.now();
+  queryClient.setQueryData<PendingQuestion[]>(questionKey(workspaceId, sessionId), (current = []) => {
+    const receivedAtById = new Map(current.map((question) => [question.id, question.receivedAt]));
+    const seeded = questions.flatMap((question) =>
+      question.sessionID === sessionId ? [questionWithReceivedAt(question, receivedAtById.get(question.id) ?? now)] : [],
+    );
+    const seededIds = new Set(seeded.map((question) => question.id));
+    const snapshotStartedAt = options.snapshotStartedAt;
+    const liveAfterSnapshot =
+      typeof snapshotStartedAt === "number"
+        ? current.filter(
+            (question) =>
+              question.sessionID === sessionId &&
+              question.receivedAt > snapshotStartedAt &&
+              !seededIds.has(question.id),
+          )
+        : [];
+    return [...seeded, ...liveAfterSnapshot].sort(sortQuestions);
+  });
+}
+
+function fileProviderMetadata(part: FilePart) {
+  if (part.source) {
+    return { opencode: { partId: part.id, source: part.source } };
+  }
+  return { opencode: { partId: part.id } };
+}
+
+function toFileUIPart(part: FilePart): UIMessage["parts"][number] {
+  return {
+    type: "file",
+    url: part.url,
+    filename: part.filename,
+    mediaType: part.mime,
+    providerMetadata: fileProviderMetadata(part),
+  };
+}
+
+function toFileSourceUIPart(part: FilePart): UIMessage["parts"][number] | null {
+  const source = part.source;
+  if (!source) return null;
+
+  const sourceId = `${part.id}:source`;
+  const providerMetadata = { opencode: { partId: sourceId, sourcePartId: part.id, source } };
+
+  if (source.type === "resource") {
+    if (source.uri.startsWith("http://")) {
+      return { type: "source-url", sourceId, url: source.uri, title: source.uri, providerMetadata };
+    }
+    if (source.uri.startsWith("https://")) {
+      return { type: "source-url", sourceId, url: source.uri, title: source.uri, providerMetadata };
+    }
+    return { type: "source-document", sourceId, mediaType: part.mime, title: source.uri, providerMetadata };
+  }
+
+  if (source.type === "symbol") {
+    return { type: "source-document", sourceId, mediaType: part.mime, title: source.name, filename: source.path, providerMetadata };
+  }
+
+  return { type: "source-document", sourceId, mediaType: part.mime, title: source.path, filename: source.path, providerMetadata };
+}
+
+function toFileUIParts(part: FilePart): UIMessage["parts"] {
+  const sourcePart = toFileSourceUIPart(part);
+  if (sourcePart) return [toFileUIPart(part), sourcePart];
+  return [toFileUIPart(part)];
+}
+
 function toUIPart(part: Part): UIMessage["parts"][number] | null {
   if (part.type === "text") {
+    if (part.synthetic || part.ignored) return null;
     return {
       type: "text",
-      text: typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "",
+      text: part.text,
       state: "done",
       providerMetadata: { opencode: { partId: part.id } },
     };
@@ -170,60 +348,50 @@ function toUIPart(part: Part): UIMessage["parts"][number] | null {
   if (part.type === "reasoning") {
     return {
       type: "reasoning",
-      text: typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "",
+      text: part.text,
       state: "done",
       providerMetadata: { opencode: { partId: part.id } },
     };
   }
   if (part.type === "file") {
-    const file = part as Part & { url?: string; filename?: string; mime?: string };
-    if (!file.url) return null;
-    return {
-      type: "file",
-      url: file.url,
-      filename: file.filename,
-      mediaType: file.mime ?? "application/octet-stream",
-      providerMetadata: { opencode: { partId: part.id } },
-    };
+    return toFileUIPart(part);
   }
   if (part.type === "tool") {
-    const record = part as Part & { tool?: string; state?: Record<string, unknown> };
-    const state = record.state ?? {};
-    const toolName = typeof record.tool === "string" ? record.tool : "tool";
-    if (typeof state.error === "string" && state.error.trim()) {
-      return {
-        type: "dynamic-tool",
-        toolName,
-        toolCallId: part.id,
-        state: "output-error",
-        input: state.input,
-        errorText: state.error,
-      };
+    if (part.tool === STRUCTURED_OUTPUT_TOOL) {
+      return parseStructuredOutputUIPart(part);
     }
-    if (state.output !== undefined) {
-      return {
-        type: "dynamic-tool",
-        toolName,
-        toolCallId: part.id,
-        state: "output-available",
-        input: state.input,
-        output: state.output,
-      };
-    }
+    return parseDynamicToolUIPart(part);
+  }
+  if (part.type === "agent") {
     return {
-      type: "dynamic-tool",
-      toolName,
-      toolCallId: part.id,
-      state: "input-available",
-      input: state.input,
+      type: "text",
+      text: part.name ? `@${part.name}` : "@agent",
+      state: "done",
+      providerMetadata: { opencode: { partId: part.id } },
     };
   }
   if (part.type === "step-start") return { type: "step-start" };
   return null;
 }
 
+function toUIParts(part: Part): UIMessage["parts"] {
+  if (part.type === "file") return toFileUIParts(part);
+  const mapped = toUIPart(part);
+  if (!mapped) return [];
+  if (part.type === "tool" && part.tool === STRUCTURED_OUTPUT_TOOL) return [mapped];
+  if (part.type === "tool" && part.state.status === "completed" && part.state.attachments) {
+    return [mapped, ...part.state.attachments.flatMap(toFileUIParts)];
+  }
+  return [mapped];
+}
+
 function getPartMetadataId(part: UIMessage["parts"][number]) {
-  if (part.type !== "text" && part.type !== "reasoning" && part.type !== "file") return null;
+  if (part.type === "dynamic-tool") {
+    const metadata = part.callProviderMetadata?.opencode;
+    if (!metadata || typeof metadata !== "object") return null;
+    return "partId" in metadata ? (metadata as { partId?: string }).partId ?? null : null;
+  }
+  if (part.type !== "text" && part.type !== "reasoning" && part.type !== "file" && part.type !== "source-url" && part.type !== "source-document") return null;
   const metadata = part.providerMetadata?.opencode;
   if (!metadata || typeof metadata !== "object") return null;
   return "partId" in metadata ? (metadata as { partId?: string }).partId ?? null : null;
@@ -376,12 +544,64 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
   const queryClient = getReactQueryClient();
   const input = entry.input;
 
+  if (event.type === "session.updated") {
+    const update = getSessionUpdatedInfo(event);
+    if (!update) return;
+    if (!isTrackedSession(entry, update.sessionId)) return;
+    for (const listener of entry.sessionUpdatedListeners) listener(update);
+    return;
+  }
+
+  if (event.type === "session.deleted") {
+    const props = (event.properties ?? {}) as { sessionID?: string; info?: { id?: string } };
+    const sessionId = props.sessionID ?? props.info?.id ?? "";
+    if (sessionId) useSessionActivityStore.getState().removeSession(workspaceId, sessionId);
+    return;
+  }
+
+  if (event.type === "session.error") {
+    const sessionId = sessionIdFromProperties(event.properties);
+    if (sessionId) {
+      const errorText = describeOpencodeSessionError(sessionErrorFromProperties(event.properties));
+      useSessionActivityStore.getState().setError(workspaceId, sessionId, errorText);
+      if (isTrackedSession(entry, sessionId)) {
+        queryClient.setQueryData<UIMessage[]>(transcriptKey(workspaceId, sessionId), (current = []) => {
+          // Key the error to the latest assistant turn so it lands beside the
+          // turn that failed and a later turn's error becomes its own message
+          // instead of overwriting this one. Falls back to the session id when
+          // no assistant turn exists yet (e.g. error before any output).
+          const turnKey = latestAssistantMessageId(current) ?? sessionId;
+          // Note: turnKey matches the snapshot's per-turn key (the errored
+          // assistant message id) so a reload reconciles instead of
+          // duplicating; the sessionId fallback only applies when the run
+          // errored before any assistant message existed.
+          return upsertMessage(current, createSessionErrorUIMessage(turnKey, errorText));
+        });
+      }
+    }
+    return;
+  }
+
+  if (event.type === "session.next.compaction.started") {
+    const sessionId = sessionIdFromProperties(event.properties);
+    if (sessionId) useSessionActivityStore.getState().setCompacting(workspaceId, sessionId, true);
+    return;
+  }
+
+  if (event.type === "session.next.compaction.ended" || event.type === "session.compacted") {
+    const sessionId = sessionIdFromProperties(event.properties);
+    if (sessionId) useSessionActivityStore.getState().setCompacting(workspaceId, sessionId, false);
+    return;
+  }
+
   if (event.type === "session.status") {
     const props = (event.properties ?? {}) as { sessionID?: string; status?: SessionStatus };
     if (!props.sessionID || !props.status) return;
-    if (!isTrackedSession(entry, props.sessionID)) return;
-    queryClient.setQueryData(statusKey(workspaceId, props.sessionID), props.status);
-    if (input && !isLiveStatus(props.status)) releaseRetainedSessionSoon(input, entry, props.sessionID);
+    useSessionActivityStore.getState().setRunStatus(workspaceId, props.sessionID, props.status);
+    const tracked = isTrackedSession(entry, props.sessionID);
+    if (tracked) queryClient.setQueryData(statusKey(workspaceId, props.sessionID), props.status);
+    for (const listener of entry.sessionStatusListeners) listener({ sessionId: props.sessionID, status: props.status });
+    if (input && tracked && !isLiveStatus(props.status)) releaseRetainedSessionSoon(input, entry, props.sessionID);
     return;
   }
 
@@ -396,6 +616,7 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
   if (event.type === "permission.asked") {
     const permission = event.properties as PermissionRequest;
     if (!permission?.id || !permission.sessionID) return;
+    useSessionActivityStore.getState().setWaitingRequest(workspaceId, permission.sessionID, "permission", permission.id, true);
     if (!isTrackedSession(entry, permission.sessionID)) return;
     const receivedAt = Date.now();
     queryClient.setQueryData<PendingPermission[]>(permissionKey(workspaceId, permission.sessionID), (current = []) => {
@@ -412,6 +633,7 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
   if (event.type === "permission.replied") {
     const props = (event.properties ?? {}) as { sessionID?: string; requestID?: string };
     if (!props.sessionID || !props.requestID) return;
+    useSessionActivityStore.getState().setWaitingRequest(workspaceId, props.sessionID, "permission", props.requestID, false);
     if (!isTrackedSession(entry, props.sessionID)) return;
     queryClient.setQueryData<PendingPermission[]>(permissionKey(workspaceId, props.sessionID), (current = []) =>
       current.filter((permission) => permission.id !== props.requestID),
@@ -419,14 +641,51 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     return;
   }
 
+  if (event.type === "question.asked") {
+    const question = event.properties as QuestionRequest;
+    if (!question?.id || !question.sessionID) return;
+    useSessionActivityStore.getState().setWaitingRequest(workspaceId, question.sessionID, "question", question.id, true);
+    if (!isTrackedSession(entry, question.sessionID)) return;
+    const receivedAt = Date.now();
+    queryClient.setQueryData<PendingQuestion[]>(questionKey(workspaceId, question.sessionID), (current = []) => {
+      const existing = current.find((item) => item.id === question.id);
+      const next = questionWithReceivedAt(question, existing?.receivedAt ?? receivedAt);
+      if (existing) {
+        return current.map((item) => (item.id === question.id ? next : item)).sort(sortQuestions);
+      }
+      return [...current, next].sort(sortQuestions);
+    });
+    return;
+  }
+
+  if (event.type === "question.replied" || event.type === "question.rejected") {
+    const props = (event.properties ?? {}) as { sessionID?: string; requestID?: string };
+    if (!props.sessionID || !props.requestID) return;
+    useSessionActivityStore.getState().setWaitingRequest(workspaceId, props.sessionID, "question", props.requestID, false);
+    if (!isTrackedSession(entry, props.sessionID)) return;
+    queryClient.setQueryData<PendingQuestion[]>(questionKey(workspaceId, props.sessionID), (current = []) =>
+      current.filter((question) => question.id !== props.requestID),
+    );
+    return;
+  }
+
   if (event.type === "message.updated") {
-    const props = (event.properties ?? {}) as { info?: { id?: string; role?: UIMessage["role"] | string; sessionID?: string } };
+    const props = (event.properties ?? {}) as {
+      info?: { id?: string; role?: UIMessage["role"] | string; sessionID?: string; time?: { created?: number } };
+    };
     const info = props.info;
     if (!info?.id || !info.sessionID || (info.role !== "user" && info.role !== "assistant" && info.role !== "system")) {
       return;
     }
+    useSessionActivityStore.getState().markMessageRole(workspaceId, info.sessionID, info.id, info.role);
     if (!isTrackedSession(entry, info.sessionID)) return;
-    const next = { id: info.id, role: info.role, parts: [] } satisfies UIMessage;
+    const created = info.time?.created;
+    const next = {
+      id: info.id,
+      role: info.role,
+      ...(typeof created === "number" ? { metadata: { opencode: { created } } } : {}),
+      parts: [],
+    } satisfies UIMessage;
     queryClient.setQueryData<UIMessage[]>(transcriptKey(workspaceId, info.sessionID), (current = []) =>
       upsertMessage(current, next),
     );
@@ -437,8 +696,11 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     const props = (event.properties ?? {}) as { part?: Part };
     const part = props.part;
     if (!part?.sessionID || !part.messageID) return;
+    if (partHasVisibleAssistantOutput(part)) {
+      useSessionActivityStore.getState().markAssistantOutput(workspaceId, part.sessionID, part.messageID);
+    }
     if (!isTrackedSession(entry, part.sessionID)) return;
-    const mapped = toUIPart(part);
+    const [mapped, ...attachments] = toUIParts(part);
     if (!mapped) return;
     const pending = entry.pendingDeltas.get(part.id);
     // Seed the new part with any deltas that arrived before this
@@ -478,7 +740,13 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
       const existing = current.find((m) => m.id === part.messageID);
       const role = existing?.role ?? inferStubRole(current);
       const withMessage = upsertMessage(current, { id: part.messageID, role, parts: [] });
-      return upsertPart(withMessage, part.messageID, part.id, seededPart);
+      const seededPartId = getPartMetadataId(seededPart) ?? part.id;
+      let next = upsertPart(withMessage, part.messageID, seededPartId, seededPart);
+      for (const attachment of attachments) {
+        const attachmentId = getPartMetadataId(attachment);
+        if (attachmentId) next = upsertPart(next, part.messageID, attachmentId, attachment);
+      }
+      return next;
     });
     if (pending) entry.pendingDeltas.delete(part.id);
     return;
@@ -493,6 +761,7 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
       delta?: string;
     };
     if (!props.sessionID || !props.messageID || !props.partID || !props.delta) return;
+    useSessionActivityStore.getState().markAssistantOutput(workspaceId, props.sessionID, props.messageID, { allowUnknownMessageRole: true });
     if (!isTrackedSession(entry, props.sessionID)) return;
     // Note: we do NOT trust `props.field` to disambiguate reasoning vs
     // text. Opencode emits `field: "text"` for both kinds; the actual
@@ -514,9 +783,11 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
   if (event.type === "session.idle") {
     const props = (event.properties ?? {}) as { sessionID?: string };
     if (!props.sessionID) return;
-    if (!isTrackedSession(entry, props.sessionID)) return;
-    queryClient.setQueryData(statusKey(workspaceId, props.sessionID), idleStatus);
-    if (input) releaseRetainedSessionSoon(input, entry, props.sessionID);
+    useSessionActivityStore.getState().setRunStatus(workspaceId, props.sessionID, idleStatus);
+    const tracked = isTrackedSession(entry, props.sessionID);
+    if (tracked) queryClient.setQueryData(statusKey(workspaceId, props.sessionID), idleStatus);
+    for (const listener of entry.sessionStatusListeners) listener({ sessionId: props.sessionID, status: idleStatus });
+    if (input && tracked) releaseRetainedSessionSoon(input, entry, props.sessionID);
   }
 }
 
@@ -692,6 +963,8 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
       clearTimeout(existing.disposeTimer);
       existing.disposeTimer = null;
     }
+    if (input.onSessionUpdated) existing.sessionUpdatedListeners.add(input.onSessionUpdated);
+    if (input.onSessionStatus) existing.sessionStatusListeners.add(input.onSessionStatus);
     existing.refs += 1;
     return () => releaseWorkspaceSessionSync(input);
   }
@@ -703,6 +976,8 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
     disposeTimer: null,
     trackedSessionRefs: new Map(),
     retainedSessionTimers: new Map(),
+    sessionUpdatedListeners: new Set(input.onSessionUpdated ? [input.onSessionUpdated] : []),
+    sessionStatusListeners: new Set(input.onSessionStatus ? [input.onSessionStatus] : []),
     pendingDeltas: new Map(),
     deltaFlushBuffer: [],
     deltaFlushScheduled: false,
@@ -718,6 +993,8 @@ function releaseWorkspaceSessionSync(input: SyncOptions) {
   const key = syncKey(input);
   const existing = syncs.get(key);
   if (!existing) return;
+  if (input.onSessionUpdated) existing.sessionUpdatedListeners.delete(input.onSessionUpdated);
+  if (input.onSessionStatus) existing.sessionStatusListeners.delete(input.onSessionStatus);
   existing.refs -= 1;
   if (existing.refs > 0) return;
   if (existing.retainedSessionTimers.size === 0) {
@@ -730,6 +1007,13 @@ export function seedSessionState(workspaceId: string, snapshot: OpenworkSessionS
   const key = transcriptKey(workspaceId, snapshot.session.id);
   const incoming = snapshotToUIMessages(snapshot);
   const existing = queryClient.getQueryData<UIMessage[]>(key);
+
+  useSessionActivityStore.getState().seedSessionRun(
+    workspaceId,
+    snapshot.session.id,
+    snapshot.status,
+    assistantOutputAfterLatestUser(incoming),
+  );
 
   queryClient.setQueryData(key, reconcileTranscriptMessages({
     currentMessages: existing ?? [],
@@ -792,6 +1076,8 @@ export function __createWorkspaceSessionSyncForTest(input: SyncOptions) {
     disposeTimer: null,
     trackedSessionRefs: new Map(),
     retainedSessionTimers: new Map(),
+    sessionUpdatedListeners: new Set(),
+    sessionStatusListeners: new Set(),
     pendingDeltas: new Map(),
     deltaFlushBuffer: [],
     deltaFlushScheduled: false,

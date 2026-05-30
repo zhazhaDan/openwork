@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, isNotNull, or } from "@openwork-ee/den-db/drizzle"
+import { and, desc, eq, inArray, isNotNull, isNull, or } from "@openwork-ee/den-db/drizzle"
 import {
   AuthUserTable,
+  InvitationTable,
   LlmProviderAccessTable,
   LlmProviderModelTable,
   LlmProviderTable,
@@ -37,6 +38,11 @@ type RouteFailure = {
   status: number
   error: string
   message?: string
+}
+
+function getInvitedMemberName(email: string) {
+  const [localPart, domain = "invited"] = email.split("@")
+  return `${localPart} ${domain.split(".")[0] ?? "invited"}`.trim()
 }
 
 const providerCatalogParamsSchema = z.object({
@@ -229,7 +235,7 @@ async function resolveMemberIds(input: {
   const rows = await db
     .select({ id: MemberTable.id })
     .from(MemberTable)
-    .where(and(eq(MemberTable.organizationId, input.organizationId), inArray(MemberTable.id, memberIds)))
+    .where(and(eq(MemberTable.organizationId, input.organizationId), inArray(MemberTable.id, memberIds), isNull(MemberTable.removedAt)))
 
   if (rows.length !== memberIds.length) {
     throw createFailure(404, "member_not_found")
@@ -395,11 +401,15 @@ async function loadLlmProviders(input: {
         email: AuthUserTable.email,
         image: AuthUserTable.image,
       },
+      invitation: {
+        email: InvitationTable.email,
+      },
     })
     .from(LlmProviderAccessTable)
     .innerJoin(MemberTable, eq(LlmProviderAccessTable.orgMembershipId, MemberTable.id))
-    .innerJoin(AuthUserTable, eq(MemberTable.userId, AuthUserTable.id))
-    .where(and(inArray(LlmProviderAccessTable.llmProviderId, providerIds), isNotNull(LlmProviderAccessTable.orgMembershipId)))
+    .leftJoin(AuthUserTable, eq(MemberTable.userId, AuthUserTable.id))
+    .leftJoin(InvitationTable, eq(MemberTable.inviteId, InvitationTable.id))
+    .where(and(inArray(LlmProviderAccessTable.llmProviderId, providerIds), isNotNull(LlmProviderAccessTable.orgMembershipId), isNull(MemberTable.removedAt)))
 
   const teamAccessRows = await db
     .select({
@@ -464,13 +474,21 @@ async function loadLlmProviders(input: {
       }))
       .sort((left, right) => left.name.localeCompare(right.name)),
     access: {
-      members: (memberAccessByProviderId.get(provider.id) ?? []).map((row) => ({
-        id: row.access.id,
-        orgMembershipId: row.member.id,
-        role: row.member.role,
-        user: row.user,
-        createdAt: row.access.createdAt,
-      })),
+      members: (memberAccessByProviderId.get(provider.id) ?? []).map((row) => {
+        const email = row.user?.email ?? row.invitation?.email ?? "invited@example.com"
+        return {
+          id: row.access.id,
+          orgMembershipId: row.member.id,
+          role: row.member.role,
+          user: {
+            id: row.user?.id ?? row.member.id,
+            name: row.user?.name ?? getInvitedMemberName(email),
+            email,
+            image: row.user?.image ?? null,
+          },
+          createdAt: row.access.createdAt,
+        }
+      }),
       teams: (teamAccessByProviderId.get(provider.id) ?? []).map((row) => ({
         id: row.access.id,
         teamId: row.team.id,

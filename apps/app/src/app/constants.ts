@@ -1,6 +1,13 @@
 import type { ModelRef, SuggestedPlugin } from "./types";
 import { t } from "../i18n";
 import { readDenBootstrapConfig } from "./lib/den";
+import {
+  BUILT_IN_OPENWORK_EXTENSION_MANIFESTS,
+  extensionContribution,
+  extensionResource,
+  isTrustedBuiltInExtension,
+  type OpenWorkExtensionManifest,
+} from "./extensions";
 
 export const MODEL_PREF_KEY = "openwork.defaultModel";
 export const SESSION_MODEL_PREF_KEY = "openwork.sessionModels";
@@ -16,7 +23,7 @@ export const DEFAULT_MODEL: ModelRef = {
 
 export const SUGGESTED_PLUGINS: SuggestedPlugin[] = [];
 
-export type ExtensionKind = "mcp" | "plugin" | "skill" | "ui-control";
+export type ExtensionKind = "mcp" | "plugin" | "skill" | "ui-control" | "extension";
 
 export type McpDirectoryInfo = {
   id?: string;
@@ -35,7 +42,42 @@ export type McpDirectoryInfo = {
   iconSlug?: string;
   /** Direct icon URL (e.g. local SVG). Takes priority over iconSlug. */
   iconSrc?: string;
+  /** Prompt inserted from the composer extension picker. */
+  composerPrompt?: string;
+  /** Whether OpenWork should show this extension as enabled before user setup. */
+  defaultEnabled?: boolean;
+  /** Whether OpenWork should hide this extension from the default catalog view. */
+  defaultHidden?: boolean;
+  /** Whether this extension is still in preview. */
+  preview?: boolean;
+  /** Normalized extension manifest backing this catalog entry. */
+  extensionManifest?: OpenWorkExtensionManifest;
 };
+
+function extensionManifestToDirectoryInfo(manifest: OpenWorkExtensionManifest): McpDirectoryInfo {
+  const mcpResource = extensionResource(manifest, "mcp");
+  return {
+    id: manifest.id,
+    name: manifest.name,
+    serverName: mcpResource?.mcpServerName ?? manifest.id,
+    description: manifest.description,
+    type: mcpResource?.command ? "local" : undefined,
+    command: mcpResource?.command,
+    oauth: false,
+    kind: "extension",
+    iconSlug: manifest.icon?.simpleIconSlug,
+    iconSrc: manifest.icon?.src,
+    composerPrompt: extensionContribution(manifest, "composer-prompt")?.prompt ?? manifest.composer?.prompt,
+    defaultEnabled: manifest.defaultEnabled,
+    defaultHidden: manifest.defaultHidden,
+    preview: manifest.preview,
+    extensionManifest: manifest,
+  };
+}
+
+export function isBuiltInOpenWorkExtension(entry: Pick<McpDirectoryInfo, "kind" | "extensionManifest">): boolean {
+  return entry.kind === "extension" && isTrustedBuiltInExtension(entry.extensionManifest);
+}
 
 /** Derive a safe MCP server name from a display name or explicit serverName. */
 export function getMcpServerName(entry: McpDirectoryInfo): string {
@@ -57,6 +99,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     oauth: true,
     kind: "mcp",
     iconSlug: "notion",
+    iconSrc: "/ext-notion.svg",
   },
   {
     get name() { return t("mcp.quick_connect_linear_title"); },
@@ -67,6 +110,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     oauth: true,
     kind: "mcp",
     iconSlug: "linear",
+    iconSrc: "/ext-linear.svg",
   },
   {
     get name() { return t("mcp.quick_connect_sentry_title"); },
@@ -77,6 +121,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     oauth: true,
     kind: "mcp",
     iconSlug: "sentry",
+    iconSrc: "/ext-sentry.svg",
   },
   {
     get name() { return t("mcp.quick_connect_stripe_title"); },
@@ -87,6 +132,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     oauth: true,
     kind: "mcp",
     iconSlug: "stripe",
+    iconSrc: "/ext-stripe.svg",
   },
   {
     get name() { return t("mcp.quick_connect_context7_title"); },
@@ -97,6 +143,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     oauth: false,
     kind: "mcp",
     iconSlug: "semanticscholar",
+    iconSrc: "/ext-context7.svg",
   },
   {
     get name() { return t("mcp.quick_connect_openwork_cloud_title"); },
@@ -125,4 +172,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     kind: "ui-control",
     iconSrc: "/openwork-mark.svg",
   },
+  ...BUILT_IN_OPENWORK_EXTENSION_MANIFESTS.map(extensionManifestToDirectoryInfo),
 ];
+
+export const OPENWORK_EXTENSION_CATALOG = MCP_QUICK_CONNECT.filter((entry) => entry.kind === "extension");

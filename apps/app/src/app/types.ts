@@ -17,6 +17,9 @@ export type SidebarSessionItem = {
   id: string;
   title: string;
   slug?: string | null;
+  status?: unknown;
+  state?: unknown;
+  runStatus?: unknown;
   parentID?: string | null;
   time?: {
     updated?: number | null;
@@ -92,6 +95,7 @@ export type PromptMode = "prompt" | "shell";
 export type ComposerPart =
   | { type: "text"; text: string }
   | { type: "agent"; name: string }
+  | { type: "skill"; name: string }
   | { type: "file"; path: string; label?: string }
   | { type: "paste"; id: string; label: string; text: string; lines: number };
 

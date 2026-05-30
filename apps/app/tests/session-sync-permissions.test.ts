@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import type { PermissionRequest } from "@opencode-ai/sdk/v2/client";
+import type { PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2/client";
 
 import type { OpenworkSessionSnapshot } from "../src/app/lib/openwork-server";
 import { getReactQueryClient } from "../src/react-app/infra/query-client";
@@ -12,7 +12,9 @@ import {
   coalescePendingDeltas,
   ensureWorkspaceSessionSync,
   permissionKey,
+  questionKey,
   seedPermissionState,
+  seedQuestionState,
   seedSessionState,
   trackWorkspaceSessionSync,
   transcriptKey,
@@ -29,6 +31,20 @@ function permission(id: string, sessionID: string): PermissionRequest {
       session: false,
       project: false,
     },
+  };
+}
+
+function question(id: string, sessionID: string): QuestionRequest {
+  return {
+    id,
+    sessionID,
+    questions: [
+      {
+        header: "Choice",
+        question: "Pick one",
+        options: [{ label: "Yes", description: "Proceed" }],
+      },
+    ],
   };
 }
 
@@ -131,6 +147,46 @@ describe("session permission sync", () => {
     seedPermissionState("workspace-a", "session-a", [], { snapshotStartedAt: 200 });
 
     expect(getReactQueryClient().getQueryData(permissionKey("workspace-a", "session-a"))).toEqual([]);
+  });
+});
+
+describe("session question sync", () => {
+  test("seeds only questions for the selected session", () => {
+    seedQuestionState("workspace-a", "session-a", [
+      question("question-a", "session-a"),
+      question("question-b", "session-b"),
+    ]);
+
+    expect(getReactQueryClient().getQueryData(questionKey("workspace-a", "session-a"))).toMatchObject([
+      { id: "question-a", sessionID: "session-a" },
+    ]);
+  });
+
+  test("adds and removes live question events", () => {
+    const syncInput = { workspaceId: "workspace-a", baseUrl: "http://127.0.0.1:1234", openworkToken: "token" };
+    const cleanup = __createWorkspaceSessionSyncForTest(syncInput);
+    const releaseSession = trackWorkspaceSessionSync(syncInput, "session-a");
+
+    try {
+      __applySessionSyncEventForTest(syncInput, {
+        type: "question.asked",
+        properties: question("question-live", "session-a"),
+      } as any);
+
+      expect(getReactQueryClient().getQueryData(questionKey("workspace-a", "session-a"))).toMatchObject([
+        { id: "question-live", sessionID: "session-a" },
+      ]);
+
+      __applySessionSyncEventForTest(syncInput, {
+        type: "question.replied",
+        properties: { sessionID: "session-a", requestID: "question-live", answers: [["Yes"]] },
+      } as any);
+
+      expect(getReactQueryClient().getQueryData(questionKey("workspace-a", "session-a"))).toEqual([]);
+    } finally {
+      releaseSession();
+      cleanup();
+    }
   });
 });
 

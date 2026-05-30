@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { isToolUIPart, type DynamicToolUIPart, type UIMessage } from "ai";
 import type { Part } from "@opencode-ai/sdk/v2/client";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -7,18 +7,20 @@ import {
   Box,
   Check,
   ChevronDown,
-  Chrome,
   CircleAlert,
   Copy,
   File as FileIcon,
   Folder,
   GitFork,
+  Globe,
   Search,
   Terminal,
   Undo2,
 } from "lucide-react";
 
 import { openDesktopPath, revealDesktopItemInDir } from "../../../../app/lib/desktop";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX,
   type MessageGroup,
@@ -182,6 +184,47 @@ type SessionTranscriptProps = {
 // virtualizer's baseline overhead for tiny sessions.
 const VIRTUALIZATION_THRESHOLD = 20;
 const VIRTUAL_OVERSCAN = 4;
+
+function clampVirtualEstimate(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function estimateTextBlockSize(text: string, isUser: boolean) {
+  const explicitLines = text.split("\n").length;
+  const wrappedLines = Math.ceil(text.length / (isUser ? 68 : 86));
+  const markdownStructureLines = text
+    .split("\n")
+    .filter((line) => /^\s*([-*+]\s+|\d+\.\s+|>\s+|#{1,6}\s+|\|)/.test(line)).length;
+  const fencedCodeBlocks = Math.floor((text.match(/```/g) ?? []).length / 2);
+  const estimatedLines = Math.max(explicitLines, wrappedLines) + markdownStructureLines * 0.5;
+  const base = isUser ? 76 : 160;
+  return base + estimatedLines * 22 + fencedCodeBlocks * 72;
+}
+
+function estimateBlockSize(block: MessageBlockItem | undefined) {
+  if (!block) return 360;
+
+  if (block.kind === "steps-cluster") {
+    const partCount = block.stepGroups.reduce((total, group) => total + group.parts.length, 0);
+    return clampVirtualEstimate(64 + partCount * 58, 96, 900);
+  }
+
+  const textSize = block.groups.reduce((total, group) => {
+    if (group.kind === "steps") {
+      return total + 72 + group.parts.length * 58;
+    }
+    return total + estimateTextBlockSize(partToText(group.part), block.isUser);
+  }, 0);
+  const attachmentSize = block.attachments.length > 0 ? 76 : 0;
+  const openTargetsSize = !block.isUser ? 44 : 0;
+  const actionsSize = block.isUser ? 24 : 36;
+
+  return clampVirtualEstimate(
+    textSize + attachmentSize + openTargetsSize + actionsSize,
+    block.isUser ? 112 : 260,
+    block.isUser ? 720 : 1800,
+  );
+}
 
 function partIdFromUiPart(part: UIMessage["parts"][number], fallbackId: string) {
   const metadata = (part as { providerMetadata?: { opencode?: { partId?: unknown } } })
@@ -386,7 +429,7 @@ function hasStructuredValue(value: unknown) {
 }
 
 function ToolActivityIcon(props: { category?: string }) {
-  const className = "mt-[6px] size-[17px] shrink-0 text-[#9a9da0]";
+  const className = "size-4 shrink-0 text-muted-foreground";
   switch (props.category) {
     case "terminal":
       return <Terminal className={className} strokeWidth={1.9} />;
@@ -428,14 +471,16 @@ async function revealFileInFinder(path: string) {
   }
 }
 
-function CopyButton(props: { getText: () => string }) {
+function CopyButton(props: { getText: () => string; label?: string }) {
   const [copied, setCopied] = useState(false);
+  const label = props.label ?? "Copy message";
 
   return (
-    <button
-      type="button"
-      className="inline-flex items-center justify-center rounded-lg border border-dls-border bg-dls-surface p-1.5 text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
-      title="Copy message"
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      title={label}
+      aria-label={label}
       onClick={async () => {
         await navigator.clipboard.writeText(props.getText());
         setCopied(true);
@@ -443,7 +488,7 @@ function CopyButton(props: { getText: () => string }) {
       }}
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
-    </button>
+    </Button>
   );
 }
 
@@ -462,12 +507,12 @@ function PastedTextChip(props: { label: string; text: string }) {
       >
         <ChevronDown
           size={12}
-          className={`shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+          className={cn("shrink-0 transition-transform", expanded && "rotate-180")}
         />
         <span>Pasted · {lineCount} line{lineCount === 1 ? "" : "s"}</span>
       </button>
       {expanded ? (
-        <div className="mt-1.5 mb-1.5 rounded-xl border border-amber-6/20 bg-amber-3/10 px-4 py-3 text-xs leading-5 text-dls-text">
+        <div className="mt-1.5 mb-1.5 rounded-xl border border-amber-6/20 bg-amber-3/10 px-4 py-3 text-xs leading-5 text-foreground">
           <pre className="whitespace-pre-wrap break-words font-mono">{props.text}</pre>
         </div>
       ) : null}
@@ -541,11 +586,12 @@ function FileCard(props: {
 
   return (
     <div
-      className={`group relative flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
+      className={cn(
+        "group relative flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors",
         props.tone === "user"
           ? "border-gray-6/60 bg-gray-2/40 hover:bg-gray-2/60"
-          : "border-gray-6/40 bg-gray-1/40 hover:bg-gray-2/30"
-      }`}
+          : "border-gray-6/40 bg-gray-1/40 hover:bg-gray-2/30",
+      )}
     >
       {isImage && props.part.url ? (
         <div className="size-11 shrink-0 overflow-hidden rounded-xl border border-dls-border/60 bg-dls-surface">
@@ -553,17 +599,18 @@ function FileCard(props: {
         </div>
       ) : (
         <div
-          className={`flex size-11 shrink-0 items-center justify-center rounded-xl ${
-            props.tone === "user" ? "bg-gray-3/60 text-gray-11" : "bg-gray-2/60 text-gray-10"
-          }`}
+          className={cn(
+            "flex size-11 shrink-0 items-center justify-center rounded-xl",
+            props.tone === "user" ? "bg-gray-3/60 text-foreground" : "bg-gray-2/60 text-muted-foreground",
+          )}
         >
           <FileIcon size={20} />
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-medium leading-snug text-gray-12">{title}</div>
+        <div className="truncate text-sm font-medium leading-snug text-foreground">{title}</div>
         {badge ? (
-          <div className="mt-1 inline-flex rounded-md bg-gray-3/50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-10">
+          <div className="mt-1 inline-flex rounded-md bg-gray-3/50 px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {badge}
           </div>
         ) : null}
@@ -573,7 +620,7 @@ function FileCard(props: {
         <div className="relative">
           <button
             type="button"
-            className="flex size-8 items-center justify-center rounded-xl text-gray-9 opacity-0 transition-all hover:bg-gray-3/60 hover:text-gray-12 group-hover:opacity-100"
+            className="flex size-8 items-center justify-center rounded-xl text-muted-foreground opacity-0 transition-all hover:bg-gray-3/60 hover:text-foreground group-hover:opacity-100"
             onClick={() => setMenuOpen((value) => !value)}
             title="File actions"
           >
@@ -585,7 +632,7 @@ function FileCard(props: {
               <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-2xl border border-dls-border bg-dls-surface p-1.5 shadow-lg">
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] text-gray-12 transition-colors hover:bg-gray-3/60"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-gray-3/60"
                   onClick={() => {
                     void openFileWithOS(props.part.url);
                     setMenuOpen(false);
@@ -595,7 +642,7 @@ function FileCard(props: {
                 </button>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] text-gray-12 transition-colors hover:bg-gray-3/60"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-gray-3/60"
                   onClick={() => {
                     void revealFileInFinder(props.part.url);
                     setMenuOpen(false);
@@ -605,7 +652,7 @@ function FileCard(props: {
                 </button>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] text-gray-12 transition-colors hover:bg-gray-3/60"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-gray-3/60"
                   onClick={() => {
                     void navigator.clipboard.writeText(props.part.url);
                     setMenuOpen(false);
@@ -654,10 +701,10 @@ function StepRow(props: {
     return (
       <div
         data-reasoning="true"
-        className="whitespace-pre-wrap font-sans text-[14px] leading-[1.65] text-[#1f2328] antialiased"
+        className="whitespace-pre-wrap font-sans text-sm leading-[1.65] text-muted-foreground antialiased"
       >
         <div className="max-w-[760px]">
-          {preview.headline ? <div className="mb-2 text-[#6f7478]">{preview.headline}</div> : null}
+          {preview.headline ? <div className="mb-2 text-muted-foreground">{preview.headline}</div> : null}
           <div>{preview.body || headline}</div>
         </div>
       </div>
@@ -665,10 +712,10 @@ function StepRow(props: {
   }
 
   return (
-    <div className="font-sans text-[14px] leading-[1.65] text-[#9a9da0] antialiased">
+    <div className="font-sans text-sm leading-[1.65] antialiased">
       <button
         type="button"
-        className="w-full text-left transition-colors hover:text-[#1f2328] disabled:cursor-default"
+        className="w-full text-left transition-colors hover:text-foreground disabled:cursor-default text-muted-foreground"
         aria-expanded={expandable ? props.expanded : undefined}
         disabled={!expandable}
         onClick={() => {
@@ -676,42 +723,43 @@ function StepRow(props: {
           props.onToggle();
         }}
       >
-        <span className="inline-flex max-w-[760px] items-start gap-3 align-top">
+        <span className="inline-flex max-w-[760px] items-center gap-3">
           <ToolActivityIcon category={summary.toolCategory} />
-          <span className="min-w-0 break-words">{headline}</span>
+          <span className="min-w-0 wrap-break-word">{headline}</span>
           {expandable ? (
             <ChevronDown
               size={15}
-              className={`mt-[7px] shrink-0 text-[#9a9da0] transition-transform ${
-                props.expanded ? "" : "-rotate-90"
-              }`}
+              className={cn(
+                "shrink-0 text-muted-foreground transition-transform",
+                !props.expanded && "-rotate-90",
+              )}
             />
           ) : null}
         </span>
       </button>
-      {statusText ? <div className="ml-7 mt-2 text-[14px] leading-[1.65] text-[#a5a8ab]">{statusText}</div> : null}
+      {statusText ? <div className="ml-7 mt-2 text-sm leading-[1.65] text-muted-foreground">{statusText}</div> : null}
       {props.expanded ? (
         <div className="mt-3 ml-7 space-y-3">
           {hasStructuredValue(toolInput) ? (
             <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.12em] text-gray-8">Request</div>
-              <pre className="overflow-x-auto rounded-[16px] border border-dls-border/70 bg-dls-surface px-4 py-3 text-[12px] leading-6 text-gray-10">
+              <div className="mb-1 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Request</div>
+              <pre className="overflow-x-auto rounded-[16px] border border-dls-border/70 bg-dls-surface px-4 py-3 text-xs leading-6 text-muted-foreground">
                 {formatStructuredValue(toolInput)}
               </pre>
             </div>
           ) : null}
           {hasStructuredValue(toolOutput) ? (
             <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.12em] text-gray-8">Result</div>
-              <pre className="overflow-x-auto rounded-[16px] border border-dls-border/70 bg-dls-surface px-4 py-3 text-[12px] leading-6 text-gray-10">
+              <div className="mb-1 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Result</div>
+              <pre className="overflow-x-auto rounded-[16px] border border-dls-border/70 bg-dls-surface px-4 py-3 text-xs leading-6 text-muted-foreground">
                 {formatStructuredValue(toolOutput)}
               </pre>
             </div>
           ) : null}
           {toolError ? (
             <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.12em] text-red-10">Error</div>
-              <pre className="overflow-x-auto rounded-[16px] border border-red-6/40 bg-red-3/20 px-4 py-3 text-[12px] leading-6 text-red-11">
+              <div className="mb-1 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">Error</div>
+              <pre className="overflow-x-auto rounded-[16px] border border-red-6/40 bg-red-3/20 px-4 py-3 text-xs leading-6 text-red-11">
                 {toolError}
               </pre>
             </div>
@@ -744,14 +792,10 @@ function StepsContainer(props: {
   };
 
   return (
-    <div className={props.isInline ? (props.isUser ? "mt-3" : "mt-7") : ""}>
+    <div>
       <div
         data-scrollable={!props.isNestedVariant ? "true" : undefined}
-        className={
-          !props.isNestedVariant
-            ? "max-h-[520px] overflow-y-auto pr-3"
-            : ""
-        }
+        className={cn(!props.isNestedVariant && "max-h-[520px] overflow-y-auto pr-3")}
       >
         <div className="flex flex-col gap-7">
           {props.stepGroups.map((group) => (
@@ -785,7 +829,7 @@ function messageGroupKey(messageId: string, group: MessageGroup) {
 function inlineOpenTargetsForMessage(message: UIMessage, verifiedTargets: OpenTarget[] | undefined) {
   const verifiedById = new Map((verifiedTargets ?? []).map((target) => [target.id, target] as const));
   const inlineTargets = new Map<string, OpenTarget>();
-  for (const candidate of deriveOpenTargets([message])) {
+  for (const candidate of deriveOpenTargets([message], { includeFileMentions: true })) {
     const verified = verifiedById.get(candidate.id);
     if (candidate.kind === "url" && isLocalhostBrowserTarget(candidate)) {
       inlineTargets.set(candidate.id, verified ?? candidate);
@@ -799,7 +843,10 @@ function inlineOpenTargetsForMessage(message: UIMessage, verifiedTargets: OpenTa
 }
 
 function OpenTargetIcon(props: { target: OpenTarget }) {
-  if (props.target.kind === "url") return <Chrome size={12} className="shrink-0 text-primary" />;
+  if (props.target.kind === "url") {
+    return <Globe size={12} className="shrink-0 text-muted-foreground" />;
+  }
+
   if (props.target.preview === "sheet") {
     return (
       <span className="inline-flex h-3.5 min-w-5 shrink-0 items-center justify-center rounded-[3px] border border-emerald-500/30 bg-emerald-500/10 px-0.5 text-[6px] font-bold leading-none text-emerald-700">
@@ -814,30 +861,28 @@ function OpenTargetIcon(props: { target: OpenTarget }) {
       </span>
     );
   }
+
   return <FileIcon size={12} className="shrink-0 text-primary" />;
 }
 
 function OpenableTargetsStrip(props: { targets: OpenTarget[]; onOpenTarget: (target: OpenTarget) => void }) {
   if (!props.targets.length) return null;
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px] leading-none">
-      <span className="mr-0.5 text-dls-secondary">Openable items</span>
-      {props.targets.map((target) => {
-        const isBrowser = target.kind === "url";
-        return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs leading-none">
+      <span className="mr-0.5 text-muted-foreground">Openable items</span>
+      {props.targets.map((target) => (
           <button
             key={target.id}
             type="button"
-            className="inline-flex max-w-[220px] items-center gap-1.5 rounded-full border border-dls-border bg-dls-surface px-2 py-1.5 text-dls-text transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+            className="inline-flex max-w-[220px] items-center gap-1.5 rounded-full border border-dls-border bg-dls-surface px-2 py-1.5 text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
             title={target.value}
             onClick={() => props.onOpenTarget(target)}
           >
             <OpenTargetIcon target={target} />
             <span className="truncate">{target.name || target.value}</span>
-            <span className="text-dls-secondary">{isBrowser ? "Open browser" : "Open artifact"}</span>
+            <span className="text-muted-foreground">{target.kind === "url" ? "Open browser" : "Open artifact"}</span>
           </button>
-        );
-      })}
+        ))}
     </div>
   );
 }
@@ -876,21 +921,22 @@ function MessageBlockRow(props: {
   if (block.kind === "steps-cluster") {
     return (
       <div
-        className={`flex group ${block.isUser ? "justify-end" : "justify-start"}`.trim()}
+        className={cn("flex group justify-start pb-4", block.isUser && "justify-end")}
         data-message-role={block.isUser ? "user" : "assistant"}
         data-message-id={block.messageIds[0] ?? ""}
         style={{ contain: "layout style paint", ...perfStyle }}
       >
         <div
-          className={`${
+          className={cn(
             block.isUser
               ? props.isNestedVariant
-                ? "relative max-w-[92%] rounded-[20px] border border-dls-border bg-dls-sidebar px-4 py-3 text-[14px] leading-relaxed text-dls-text"
-                : "relative max-w-[85%] rounded-[24px] border border-dls-border bg-dls-sidebar px-6 py-4 text-[15px] leading-relaxed text-dls-text"
+                ? "relative max-w-[92%] rounded-[20px] border border-dls-border bg-dls-sidebar px-4 py-3 text-sm leading-relaxed text-foreground"
+                : "relative max-w-[85%] rounded-[24px] border border-dls-border bg-dls-sidebar px-6 py-4 text-sm leading-relaxed text-foreground"
               : props.isNestedVariant
-                ? "w-full relative text-[14px] leading-[1.65] text-dls-text group"
-                : "w-full relative max-w-[760px] text-[15px] leading-[1.7] text-dls-text group"
-          } ${searchOutlineClass}`}
+                ? "w-full relative text-sm leading-[1.65] text-foreground group"
+                : "w-full relative max-w-[760px] text-sm leading-[1.7] text-foreground group",
+            searchOutlineClass,
+          )}
         >
           <StepsContainer
             stepGroups={block.stepGroups}
@@ -913,27 +959,32 @@ function MessageBlockRow(props: {
     : [];
 
   if (isSyntheticSessionError) {
-    const messageText = block.renderableParts
+    const fullErrorText = block.renderableParts
       .map((part) => partToText(part))
-      .join(" ")
+      .join("\n")
+      .trim();
+    const messageText = fullErrorText
       .replace(/\s*\n+\s*/g, " ")
       .replace(/\s{2,}/g, " ")
       .trim();
 
     return (
       <div
-        className="flex group justify-start"
+        className="flex group justify-start pb-4"
         data-message-role="assistant"
         data-message-id={block.messageId}
         style={{ contain: "layout style paint", ...perfStyle }}
       >
-        <div className={`w-full relative ${props.isNestedVariant ? "" : "max-w-[650px]"} ${searchOutlineClass}`}>
+        <div className={cn("w-full relative", !props.isNestedVariant && "max-w-[650px]", searchOutlineClass)}>
           <div
-            className="inline-flex max-w-full items-start gap-2 rounded-[18px] border border-red-7/20 bg-red-1/35 px-3 py-2 text-[13px] leading-5 text-red-12 shadow-sm"
+            className="inline-flex max-w-full items-start gap-2 rounded-[18px] border border-red-7/20 bg-red-1/35 py-2 pl-3 pr-2 text-sm leading-5 text-red-12 shadow-sm"
             role="alert"
           >
             <CircleAlert size={14} className="mt-0.5 shrink-0" />
-            <div className="min-w-0 break-words">{messageText}</div>
+            <div className="min-w-0 wrap-break-word pt-px">{messageText}</div>
+            <div className="shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity">
+              <CopyButton getText={() => fullErrorText} label="Copy error" />
+            </div>
           </div>
         </div>
       </div>
@@ -942,24 +993,24 @@ function MessageBlockRow(props: {
 
   return (
     <div
-      className={`flex group ${block.isUser ? "justify-end" : "justify-start"}`.trim()}
+      className={cn("flex group justify-start relative pb-4", block.isUser && "justify-end", !props.isNestedVariant && "pb-8")}
       data-message-role={block.isUser ? "user" : "assistant"}
       data-message-id={block.messageId}
       style={{ contain: "layout style paint", ...perfStyle }}
     >
       <div
-        className={`${
-          block.isUser
-            ? props.isNestedVariant
-              ? "relative max-w-[92%] rounded-[20px] border border-dls-border bg-dls-sidebar px-4 py-3 text-[14px] leading-relaxed text-dls-text"
-              : "relative max-w-[85%] rounded-[24px] border border-dls-border bg-dls-sidebar px-6 py-4 text-[15px] leading-relaxed text-dls-text"
-            : props.isNestedVariant
-              ? "w-full relative text-[14px] leading-[1.65] text-dls-text antialiased group"
-              : "w-full relative max-w-[760px] text-[15px] leading-[1.72] text-dls-text antialiased group"
-        } ${searchOutlineClass}`}
+        className={cn(
+          "text-sm text-foreground leading-relaxed",
+          block.isUser && "border border-dls-border bg-dls-sidebar",
+          block.isUser && props.isNestedVariant && "max-w-[92%] rounded-[20px] px-4 py-3",
+          block.isUser && !props.isNestedVariant && "max-w-[85%] rounded-[24px] px-6 py-4",
+          !block.isUser && "w-full antialiased group",
+          !block.isUser && !props.isNestedVariant && "max-w-[760px]",
+          searchOutlineClass,
+        )}
       >
         {block.attachments.length > 0 ? (
-          <div className={block.isUser ? "mb-3 flex flex-wrap gap-2" : "mb-4 flex flex-wrap gap-2"}>
+          <div className={cn("flex flex-wrap gap-2", block.isUser ? "mb-3" : "mb-4")}>
             {block.attachments.map((attachment) => (
               <FileCard
                 key={`${block.messageId}:${attachment.url}`}
@@ -980,7 +1031,7 @@ function MessageBlockRow(props: {
             !block.isUser && props.isStreaming && block.messageId === props.latestAssistantMessageId;
 
           return (
-            <div key={messageGroupKey(block.messageId, group)} className={group === block.groups.at(-1) ? "" : groupSpacing}>
+            <div key={messageGroupKey(block.messageId, group)} className={cn(group !== block.groups.at(-1) && groupSpacing)}>
               {group.kind === "text" ? (() => {
                 if (group.part.type === "file") {
                   const filePart = group.part as {
@@ -1005,7 +1056,7 @@ function MessageBlockRow(props: {
                   return (
                     <HighlightedPlainText
                       text={text}
-                      className="whitespace-pre-wrap break-words text-gray-12"
+                      className="whitespace-pre-wrap wrap-break-word text-foreground"
                       highlightQuery={highlightQuery}
                     />
                   );
@@ -1042,28 +1093,33 @@ function MessageBlockRow(props: {
         {props.onOpenTarget ? <OpenableTargetsStrip targets={inlineOpenTargets} onOpenTarget={props.onOpenTarget} /> : null}
 
         {!props.isNestedVariant ? (
-          <div className="absolute bottom-2 right-2 flex items-center gap-0.5 opacity-100 pointer-events-auto md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:pointer-events-auto transition-opacity select-none rounded-lg border border-dls-border bg-dls-surface p-0.5">
+          <div
+            className={cn(
+              "absolute bottom-2 flex items-center gap-0.5 opacity-100 pointer-events-auto md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:pointer-events-auto transition-opacity select-none",
+              block.isUser ? "right-0" : "left-0",
+            )}
+          >
             {props.onRevertToMessage ? (
-              <button
-                type="button"
-                className="flex size-7 items-center justify-center rounded-md text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 onClick={() => props.onRevertToMessage?.(block.messageId)}
                 title="Revert to here"
                 aria-label="Revert to this message"
               >
                 <Undo2 size={14} />
-              </button>
+              </Button>
             ) : null}
             {props.onForkAtMessage ? (
-              <button
-                type="button"
-                className="flex size-7 items-center justify-center rounded-md text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 onClick={() => props.onForkAtMessage?.(block.messageId)}
                 title="Fork from here"
                 aria-label="Fork conversation from this message"
               >
                 <GitFork size={14} />
-              </button>
+              </Button>
             ) : null}
             <CopyButton getText={() => messageToText(block.message)} />
           </div>
@@ -1226,31 +1282,33 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
   // switching to virtualization.
   const shouldVirtualize = messageBlocks.length >= VIRTUALIZATION_THRESHOLD;
 
+  const estimateVirtualItemSize = useCallback(
+    (index: number) => estimateBlockSize(messageBlocks[index]),
+    [messageBlocks],
+  );
+
+  const getVirtualItemKey = useCallback((index: number) => {
+    const block = messageBlocks[index];
+    if (!block) return `block-${index}`;
+    if (block.kind === "steps-cluster") {
+      return `steps-${block.messageIds.join(",")}`;
+    }
+    return `message-${block.messageId}`;
+  }, [messageBlocks]);
+
   const virtualizer = useVirtualizer({
     count: messageBlocks.length,
     getScrollElement: () => props.scrollElement?.() ?? null,
-    // Give react-virtual a shape-aware estimate so the initial scroll
-    // height is closer to reality. Small steps-cluster rows are much
-    // shorter than full assistant message blocks; a good estimate means
-    // fewer measurement-driven scroll corrections as rows come into view.
-    estimateSize: (index) => {
-      const block = messageBlocks[index];
-      if (!block) return 180;
-      if (block.kind === "steps-cluster") return 80;
-      return block.isUser ? 96 : 320;
-    },
+    // TanStack recommends estimating the largest comfortable dynamic size.
+    // Content-aware estimates reduce the measurement corrections that cause
+    // long transcripts to jitter as previously-unmeasured rows enter view.
+    estimateSize: estimateVirtualItemSize,
     overscan: VIRTUAL_OVERSCAN,
-    getItemKey: (index) => {
-      const block = messageBlocks[index];
-      if (!block) return `block-${index}`;
-      if (block.kind === "steps-cluster") {
-        return `steps-${block.messageIds.join(",")}`;
-      }
-      return `message-${block.messageId}`;
-    },
+    getItemKey: getVirtualItemKey,
   });
 
   const virtualRows = shouldVirtualize ? virtualizer.getVirtualItems() : [];
+  const firstVirtualRow = virtualRows[0];
 
   useEffect(() => {
     const register = props.setScrollToMessageById;
@@ -1292,7 +1350,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
   const shouldUseContentVisibility = !shouldVirtualize && messageBlocks.length > 24;
 
   return (
-    <div className={isNestedVariant ? "pb-0" : "pb-10"} style={{ contain: "layout paint style" }}>
+    <div className="pb-0" style={{ contain: "layout paint style" }}>
       {shouldVirtualize ? (
         // Always render the virtualized container once we've decided to
         // virtualize — even if virtualRows is empty on the very first tick
@@ -1306,47 +1364,49 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
             width: "100%",
           }}
         >
-          {virtualRows.map((virtualRow) => {
-            const block = messageBlocks[virtualRow.index];
-            if (!block) return null;
-            return (
-              <div
-                key={virtualRow.key}
-                data-index={virtualRow.index}
-                ref={(element) => {
-                  if (element) {
-                    virtualizer.measureElement(element);
-                  }
-                }}
-                className="absolute left-0 top-0 w-full pb-4"
-                style={{
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-              >
-                <MessageBlockRow
-                  block={block}
-                  blockIndex={virtualRow.index}
-                  totalBlocks={messageBlocks.length}
-                  isNestedVariant={isNestedVariant}
-                  shouldUseContentVisibility={shouldUseContentVisibility}
-                  expandedStepIds={expandedStepIds}
-                  onExpandedStepIdsChange={onExpandedStepIdsChange}
-                  searchMatchMessageIds={props.searchMatchMessageIds}
-                  activeSearchMessageId={props.activeSearchMessageId}
-                  searchHighlightQuery={props.searchHighlightQuery}
-                  isStreaming={props.isStreaming}
-                  latestAssistantMessageId={latestAssistantMessageId}
-                  onRevertToMessage={props.onRevertToMessage}
-                  onForkAtMessage={props.onForkAtMessage}
-                  openTargets={props.openTargets}
-                  onOpenTarget={props.onOpenTarget}
-                />
-              </div>
-            );
-          })}
+          {firstVirtualRow ? (
+            <div
+              className="absolute left-0 top-0 w-full"
+              style={{
+                transform: `translateY(${firstVirtualRow.start}px)`,
+              }}
+            >
+              {virtualRows.map((virtualRow) => {
+                const block = messageBlocks[virtualRow.index];
+                if (!block) return null;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    className="w-full"
+                  >
+                    <MessageBlockRow
+                      block={block}
+                      blockIndex={virtualRow.index}
+                      totalBlocks={messageBlocks.length}
+                      isNestedVariant={isNestedVariant}
+                      shouldUseContentVisibility={shouldUseContentVisibility}
+                      expandedStepIds={expandedStepIds}
+                      onExpandedStepIdsChange={onExpandedStepIdsChange}
+                      searchMatchMessageIds={props.searchMatchMessageIds}
+                      activeSearchMessageId={props.activeSearchMessageId}
+                      searchHighlightQuery={props.searchHighlightQuery}
+                      isStreaming={props.isStreaming}
+                      latestAssistantMessageId={latestAssistantMessageId}
+                      onRevertToMessage={props.onRevertToMessage}
+                      onForkAtMessage={props.onForkAtMessage}
+                      openTargets={props.openTargets}
+                      onOpenTarget={props.onOpenTarget}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       ) : (
-        <div className={isNestedVariant ? "space-y-3" : "space-y-4"}>
+        <div>
           {messageBlocks.map((block, index) => (
             <MessageBlockRow
               key={blockIdentityKey(block)}

@@ -22,21 +22,9 @@ display needed. See [`daytona-flows.md`](./daytona-flows.md) for full details.
 Quick start:
 
 ```bash
-# 1. Create sandbox
-daytona create --name openwork-test --dockerfile .devcontainer/Dockerfile \
-  --context .devcontainer/Dockerfile --context .devcontainer/start-display.sh \
-  --context .devcontainer/start-services.sh \
-  --class large --memory 8 --auto-stop 60 --public --target us
-
-# 2. Start services
-daytona exec openwork-test 'bash /workspace/.devcontainer/start-services.sh'
-
-# 3. Get CDP URL
-daytona preview-url openwork-test -p 9825
-# → https://9825-xxx.daytonaproxy01.net
-
-# 4. Run evals using browser_* tools with that URL
-browser_list({ browser_url: "https://9825-xxx.daytonaproxy01.net" })
+daytona organization use "Different AI"
+bash .devcontainer/test-on-daytona.sh [branch-or-commit]
+# Use the printed Electron CDP URL with browser_* tools.
 ```
 
 ### Option B: Local Electron
@@ -55,8 +43,8 @@ Open the app and follow the step lists by hand.
 
 ## Tool reference
 
-Evals use the OpenCode browser tools (`.opencode/tools/browser.ts`), not
-Chrome DevTools MCP. Every tool takes `browser_url` as the first argument.
+Evals use the OpenCode browser tools (`.opencode/tools/browser.ts`). Every tool
+takes `browser_url` as the first argument.
 
 | Tool | Description |
 |------|-------------|
@@ -94,3 +82,17 @@ Chrome DevTools MCP. Every tool takes `browser_url` as the first argument.
 - [`onboarding-welcome-flows.md`](./onboarding-welcome-flows.md) — the 7
   onboarding/welcome flows covering first-run experience and folder
   explanation.
+- [`browser-extension-flows.md`](./browser-extension-flows.md) — browser
+  extension plugin loading, built-in browser navigation, composer extensions
+  menu, extension toggle, and stale MCP migration.
+- [`extensions-marketplace-flows.md`](./extensions-marketplace-flows.md) —
+  extension runtime and marketplace install/remove/search/filter flows.
+- [`desktop-policy-extension-flows.md`](./desktop-policy-extension-flows.md) —
+  admin-to-member extension policy flows for disabling and restoring built-in
+  extensions.
+- [`workspace-layout-state-flows.md`](./workspace-layout-state-flows.md) —
+  persisted sidebar/browser layout, legacy layout migration, and workspace-safe
+  layout state.
+- [`environment-variable-flows.md`](./environment-variable-flows.md) — local
+  environment variable CRUD, masking, validation, apply/restart behavior, and
+  remote-workspace secret boundaries.

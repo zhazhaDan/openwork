@@ -4,8 +4,10 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { cn } from "@/lib/utils";
 
 type ArtifactTextEditorProps = {
+  className?: string;
   value: string;
   language: "markdown" | "text";
   onChange: (value: string) => void;
@@ -15,11 +17,17 @@ export function ArtifactTextEditor(props: ArtifactTextEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(props.onChange);
-  onChangeRef.current = props.onChange;
+
+  useEffect(() => {
+    onChangeRef.current = props.onChange;
+  }, [props.onChange]);
 
   useEffect(() => {
     const root = rootRef.current;
-    if (!root) return;
+
+    if (!root) {
+      return;
+    }
 
     const view = new EditorView({
       parent: root,
@@ -32,7 +40,9 @@ export function ArtifactTextEditor(props: ArtifactTextEditorProps) {
           props.language === "markdown" ? markdown() : [],
           EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {
-            if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+            if (update.docChanged) {
+              onChangeRef.current(update.state.doc.toString());
+            }
           }),
           EditorView.theme({
             "&": { height: "100%", background: "transparent" },
@@ -46,7 +56,9 @@ export function ArtifactTextEditor(props: ArtifactTextEditorProps) {
         ],
       }),
     });
+
     viewRef.current = view;
+
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -55,11 +67,19 @@ export function ArtifactTextEditor(props: ArtifactTextEditorProps) {
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view) return;
+
+    if (!view) {
+      return;
+    }
+
     const current = view.state.doc.toString();
-    if (current === props.value) return;
+
+    if (current === props.value) {
+      return;
+    }
+
     view.dispatch({ changes: { from: 0, to: current.length, insert: props.value } });
   }, [props.value]);
 
-  return <div ref={rootRef} className="h-full min-h-0 overflow-hidden" />;
+  return <div ref={rootRef} className={cn("h-full min-h-0 overflow-hidden", props.className)} />;
 }

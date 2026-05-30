@@ -338,13 +338,75 @@ type PluginMarketplaceSummary = {
   name: string
 }
 
-function serializePlugin(row: PluginRow, memberCount?: number, marketplaces: PluginMarketplaceSummary[] = []) {
+function extensionResourceTypeForConfigObject(objectType: string) {
+  switch (objectType) {
+    case "skill":
+    case "agent":
+    case "command":
+    case "tool":
+    case "mcp":
+    case "hook":
+    case "context":
+      return objectType
+    default:
+      return "file"
+  }
+}
+
+function serializePluginExtension(row: PluginRow, componentCounts: Record<string, number>) {
+  const sourceFormat = "claude-plugin"
+  const description = row.description?.trim() || `${row.name} extension`
+  const resources = Object.entries(componentCounts).flatMap(([objectType, count]) => {
+    if (count <= 0) return []
+    const resourceType = extensionResourceTypeForConfigObject(objectType)
+    return [{
+      type: resourceType,
+      id: `${row.id}:${objectType}`,
+      label: `${count} ${objectType}${count === 1 ? "" : "s"}`,
+      required: true,
+    }]
+  })
+  return {
+    description: row.description,
+    id: row.id,
+    manifest: {
+      schemaVersion: 1,
+      id: row.id,
+      name: row.name,
+      description,
+      source: {
+        format: sourceFormat,
+        origin: "den" as const,
+        reference: row.id,
+        trusted: false,
+      },
+      resources,
+      contributions: [{
+        type: "setup-instructions",
+        ref: "den.claudePlugin.setup",
+        label: "Claude-compatible plugin import",
+        location: "settings-detail",
+      }],
+      setup: {
+        instructions: "Imported from a Claude-compatible plugin. OpenWork installs its resources into this workspace as extension components.",
+      },
+      lifecycle: {
+        detection: Object.keys(componentCounts).map((objectType) => `${objectType}:${row.id}`),
+      },
+    },
+    name: row.name,
+    sourceFormat,
+  }
+}
+
+function serializePlugin(row: PluginRow, memberCount?: number, marketplaces: PluginMarketplaceSummary[] = [], componentCounts: Record<string, number> = {}) {
   return {
     createdAt: row.createdAt.toISOString(),
     createdByOrgMembershipId: row.createdByOrgMembershipId,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     description: row.description,
     id: row.id,
+    extension: serializePluginExtension(row, componentCounts),
     marketplaces,
     memberCount,
     name: row.name,
@@ -1536,10 +1598,13 @@ export async function getMarketplaceResolved(input: { context: PluginArchActorCo
     counts.set(objectType, (counts.get(objectType) ?? 0) + 1)
   }
 
-  const plugins = pluginRows.map((row) => ({
-    ...serializePlugin(row, memberCounts.get(row.id) ?? 0),
-    componentCounts: Object.fromEntries(componentCountsByPlugin.get(row.id) ?? new Map()),
-  }))
+  const plugins = pluginRows.map((row) => {
+    const componentCounts = Object.fromEntries(componentCountsByPlugin.get(row.id) ?? new Map())
+    return {
+      ...serializePlugin(row, memberCounts.get(row.id) ?? 0, [], componentCounts),
+      componentCounts,
+    }
+  })
 
   let source: MarketplaceResolvedSource = null
   if (pluginIds.length > 0) {
@@ -1714,6 +1779,10 @@ export async function disconnectConnectorAccount(input: { connectorAccountId: Co
       .where(inArray(ConfigObjectTable.connectorInstanceId, instanceIds))
   const configObjectIds = configObjectRows.map((entry) => entry.id)
 
+  // Resolve every imported marketplace/plugin id to delete up front so the
+  // transaction below is a single pass of pure writes (no reads on the tx).
+  const importedResourceCleanupPlan = await planConnectorImportedResourceCleanupIds(connectorPluginIds)
+
   await db.transaction(async (tx) => {
     if (instanceIds.length > 0) {
       await tx.delete(ConnectorSourceTombstoneTable).where(inArray(ConnectorSourceTombstoneTable.connectorInstanceId, instanceIds))
@@ -1739,7 +1808,7 @@ export async function disconnectConnectorAccount(input: { connectorAccountId: Co
       await tx.delete(ConnectorInstanceTable).where(inArray(ConnectorInstanceTable.id, instanceIds))
     }
 
-    await cleanupConnectorImportedResources({ seedPluginIds: connectorPluginIds, tx })
+    await deleteConnectorImportedResources({ plan: importedResourceCleanupPlan, tx })
 
     await tx.delete(ConnectorAccountTable).where(eq(ConnectorAccountTable.id, row.id))
   })
@@ -1875,51 +1944,24 @@ function commonSelectorRootPath(selectors: string[]): string | null {
   return ""
 }
 
-async function assertConnectorImportedResourceCleanup(input: {
+type ConnectorImportedResourceCleanupPlan = {
   marketplaceIdsToDelete: MarketplaceId[]
   pluginIdsToDelete: PluginId[]
-  tx: DbTransaction
-}) {
-  if (input.pluginIdsToDelete.length > 0) {
-    const [remainingPlugins, remainingPluginMappings, remainingPluginMemberships, remainingPluginGrants] = await Promise.all([
-      input.tx.select({ id: PluginTable.id }).from(PluginTable).where(inArray(PluginTable.id, input.pluginIdsToDelete)),
-      input.tx.select({ id: ConnectorMappingTable.id }).from(ConnectorMappingTable).where(inArray(ConnectorMappingTable.pluginId, input.pluginIdsToDelete)),
-      input.tx.select({ id: PluginConfigObjectTable.id }).from(PluginConfigObjectTable).where(inArray(PluginConfigObjectTable.pluginId, input.pluginIdsToDelete)),
-      input.tx.select({ id: PluginAccessGrantTable.id }).from(PluginAccessGrantTable).where(inArray(PluginAccessGrantTable.pluginId, input.pluginIdsToDelete)),
-    ])
-
-    if (remainingPlugins.length > 0 || remainingPluginMappings.length > 0 || remainingPluginMemberships.length > 0 || remainingPluginGrants.length > 0) {
-      throw new Error("Connector cleanup left plugin records behind.")
-    }
-  }
-
-  if (input.marketplaceIdsToDelete.length > 0) {
-    const [remainingMarketplaces, remainingMarketplaceMemberships, remainingMarketplaceGrants] = await Promise.all([
-      input.tx.select({ id: MarketplaceTable.id }).from(MarketplaceTable).where(inArray(MarketplaceTable.id, input.marketplaceIdsToDelete)),
-      input.tx.select({ id: MarketplacePluginTable.id }).from(MarketplacePluginTable).where(inArray(MarketplacePluginTable.marketplaceId, input.marketplaceIdsToDelete)),
-      input.tx.select({ id: MarketplaceAccessGrantTable.id }).from(MarketplaceAccessGrantTable).where(inArray(MarketplaceAccessGrantTable.marketplaceId, input.marketplaceIdsToDelete)),
-    ])
-
-    if (remainingMarketplaces.length > 0 || remainingMarketplaceMemberships.length > 0 || remainingMarketplaceGrants.length > 0) {
-      throw new Error("Connector cleanup left marketplace records behind.")
-    }
-  }
 }
 
-async function cleanupConnectorImportedResources(input: {
-  seedPluginIds: PluginId[]
-  tx: DbTransaction
-}) {
-  const seedPluginIds = uniqueIds(input.seedPluginIds)
-  if (seedPluginIds.length === 0) {
-    return { deletedMarketplaceCount: 0, deletedPluginCount: 0 }
+// Read-only planning pass. Runs outside of any transaction so that the
+// subsequent delete pass can execute as a single transaction of pure writes.
+async function planConnectorImportedResourceCleanupIds(seedPluginIds: PluginId[]): Promise<ConnectorImportedResourceCleanupPlan> {
+  const uniqueSeedPluginIds = uniqueIds(seedPluginIds)
+  if (uniqueSeedPluginIds.length === 0) {
+    return { marketplaceIdsToDelete: [], pluginIdsToDelete: [] }
   }
 
-  const connectorMarketplaceRows = await input.tx
+  const connectorMarketplaceRows = await db
     .select({ marketplaceId: MarketplacePluginTable.marketplaceId })
     .from(MarketplacePluginTable)
     .where(and(
-      inArray(MarketplacePluginTable.pluginId, seedPluginIds),
+      inArray(MarketplacePluginTable.pluginId, uniqueSeedPluginIds),
       eq(MarketplacePluginTable.membershipSource, "connector"),
       isNull(MarketplacePluginTable.removedAt),
     ))
@@ -1927,7 +1969,7 @@ async function cleanupConnectorImportedResources(input: {
 
   const activeMarketplaceMemberships = candidateMarketplaceIds.length === 0
     ? []
-    : await input.tx
+    : await db
       .select({
         marketplaceId: MarketplacePluginTable.marketplaceId,
         membershipSource: MarketplacePluginTable.membershipSource,
@@ -1940,7 +1982,7 @@ async function cleanupConnectorImportedResources(input: {
       ))
 
   const candidatePluginIds = uniqueIds([
-    ...seedPluginIds,
+    ...uniqueSeedPluginIds,
     ...activeMarketplaceMemberships
       .filter((membership) => membership.membershipSource === "connector")
       .map((membership) => membership.pluginId),
@@ -1948,7 +1990,7 @@ async function cleanupConnectorImportedResources(input: {
 
   const activePluginMembershipRows = candidatePluginIds.length === 0
     ? []
-    : await input.tx
+    : await db
       .select({ pluginId: PluginConfigObjectTable.pluginId })
       .from(PluginConfigObjectTable)
       .where(and(
@@ -1958,12 +2000,12 @@ async function cleanupConnectorImportedResources(input: {
 
   const activeMappingRows = candidatePluginIds.length === 0
     ? []
-    : await input.tx
+    : await db
       .select({ pluginId: ConnectorMappingTable.pluginId })
       .from(ConnectorMappingTable)
       .where(inArray(ConnectorMappingTable.pluginId, candidatePluginIds))
 
-  const { marketplaceIdsToDelete, pluginIdsToDelete } = planConnectorImportedResourceCleanup({
+  return planConnectorImportedResourceCleanup({
     activeMarketplaceMemberships,
     activeMappingPluginIds: activeMappingRows
       .map((row) => row.pluginId)
@@ -1972,6 +2014,15 @@ async function cleanupConnectorImportedResources(input: {
     candidateMarketplaceIds,
     candidatePluginIds,
   })
+}
+
+// Write-only delete pass. Must run inside a transaction. Contains no reads so it
+// is safe to run alongside the other deletes on the same Vitess connection.
+async function deleteConnectorImportedResources(input: {
+  plan: ConnectorImportedResourceCleanupPlan
+  tx: DbTransaction
+}) {
+  const { marketplaceIdsToDelete, pluginIdsToDelete } = input.plan
 
   if (pluginIdsToDelete.length > 0) {
     await input.tx.delete(PluginConfigObjectTable).where(inArray(PluginConfigObjectTable.pluginId, pluginIdsToDelete))
@@ -1984,17 +2035,6 @@ async function cleanupConnectorImportedResources(input: {
     await input.tx.delete(MarketplacePluginTable).where(inArray(MarketplacePluginTable.marketplaceId, marketplaceIdsToDelete))
     await input.tx.delete(MarketplaceAccessGrantTable).where(inArray(MarketplaceAccessGrantTable.marketplaceId, marketplaceIdsToDelete))
     await input.tx.delete(MarketplaceTable).where(inArray(MarketplaceTable.id, marketplaceIdsToDelete))
-  }
-
-  await assertConnectorImportedResourceCleanup({
-    marketplaceIdsToDelete,
-    pluginIdsToDelete,
-    tx: input.tx,
-  })
-
-  return {
-    deletedMarketplaceCount: marketplaceIdsToDelete.length,
-    deletedPluginCount: pluginIdsToDelete.length,
   }
 }
 
@@ -2062,11 +2102,14 @@ export async function getConnectorInstanceConfiguration(input: { connectorInstan
 
   return {
     autoImportNewPlugins: typeof savedAutoImport === "boolean" ? savedAutoImport : true,
-    configuredPlugins: pluginRows.map((row) => ({
-      ...serializePlugin(row, membershipCounts.get(row.id) ?? 0),
-      componentCounts: Object.fromEntries(pluginComponentCounts.get(row.id) ?? new Map()),
-      rootPath: pluginRootPaths.get(row.id) ?? null,
-    })),
+    configuredPlugins: pluginRows.map((row) => {
+      const componentCounts = Object.fromEntries(pluginComponentCounts.get(row.id) ?? new Map())
+      return {
+        ...serializePlugin(row, membershipCounts.get(row.id) ?? 0, [], componentCounts),
+        componentCounts,
+        rootPath: pluginRootPaths.get(row.id) ?? null,
+      }
+    }),
     connectorInstance: serializeConnectorInstance(instance),
     importedConfigObjectCount: configObjectRows.length,
     mappingCount: mappings.length,
@@ -2105,6 +2148,10 @@ export async function removeConnectorInstance(input: { connectorInstanceId: Conn
     .where(eq(ConfigObjectTable.connectorInstanceId, instance.id))
   const configObjectIds = configObjectRows.map((entry) => entry.id)
 
+  // Resolve every imported marketplace/plugin id to delete up front so the
+  // transaction below is a single pass of pure writes (no reads on the tx).
+  const importedResourceCleanupPlan = await planConnectorImportedResourceCleanupIds(pluginIds)
+
   await db.transaction(async (tx) => {
     await tx.delete(ConnectorSourceTombstoneTable).where(eq(ConnectorSourceTombstoneTable.connectorInstanceId, instance.id))
     await tx.delete(ConnectorSourceBindingTable).where(eq(ConnectorSourceBindingTable.connectorInstanceId, instance.id))
@@ -2126,7 +2173,7 @@ export async function removeConnectorInstance(input: { connectorInstanceId: Conn
     await tx.delete(ConnectorInstanceAccessGrantTable).where(eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, instance.id))
     await tx.delete(ConnectorInstanceTable).where(eq(ConnectorInstanceTable.id, instance.id))
 
-    await cleanupConnectorImportedResources({ seedPluginIds: pluginIds, tx })
+    await deleteConnectorImportedResources({ plan: importedResourceCleanupPlan, tx })
   })
 
   return {
@@ -2500,11 +2547,16 @@ async function buildConnectorAutomationContext(input: { connectorInstance: Conne
     .where(and(
       eq(MemberTable.organizationId, input.connectorInstance.organizationId),
       eq(MemberTable.id, input.connectorInstance.createdByOrgMembershipId),
+      isNull(MemberTable.removedAt),
     ))
     .limit(1)
   const member = memberRows[0] as MemberRow | undefined
   if (!member) {
     throw new PluginArchRouteFailure(404, "member_not_found", "Connector creator member not found.")
+  }
+
+  if (!member.userId) {
+    throw new PluginArchRouteFailure(404, "member_not_joined", "Connector creator member has not joined the organization.")
   }
 
   return {
@@ -2514,6 +2566,7 @@ async function buildConnectorAutomationContext(input: { connectorInstance: Conne
         createdAt: member.createdAt,
         id: member.id,
         isOwner: roleIncludesOwner(member.role),
+        joinedAt: member.joinedAt,
         role: member.role,
         userId: member.userId,
       },
@@ -2537,35 +2590,72 @@ async function buildConnectorAutomationContext(input: { connectorInstance: Conne
 
 async function maybeAutoImportGithubConnectorInstance(input: {
   connectorInstance: ConnectorInstanceRow
+  connectorSyncEventId?: ConnectorSyncEventId
   connectorTarget: ConnectorTargetRow
 }) {
   const instanceConfig = input.connectorInstance.instanceConfigJson && typeof input.connectorInstance.instanceConfigJson === "object"
     ? input.connectorInstance.instanceConfigJson as Record<string, unknown>
     : {}
-  if (instanceConfig.autoImportNewPlugins !== true) {
-    return { autoImported: false as const, createdPluginCount: 0, materializedConfigObjectCount: 0 }
+  // Treat an unset flag as enabled to match getGithubDiscoveryContext defaults: a repo the
+  // user has already configured should re-sync on push unless they explicitly opted out.
+  const autoImportNewPlugins = instanceConfig.autoImportNewPlugins !== false
+  if (!autoImportNewPlugins) {
+    // User explicitly disabled auto-import: do not run discovery or materialize any objects.
+    return {
+      autoImported: false as const,
+      autoImportNewPlugins,
+      classification: null,
+      createdMarketplace: null,
+      createdPluginCount: 0,
+      createdPlugins: [],
+      discoveredPluginCount: 0,
+      materializedConfigObjectCount: 0,
+      materializedConfigObjects: [],
+      sourceRevisionRef: null,
+    }
   }
 
   const context = await buildConnectorAutomationContext({ connectorInstance: input.connectorInstance })
+  // Force a fresh discovery so the latest head revision and file contents are fetched. Without
+  // this, the cached discovery snapshot keeps the previous sourceRevisionRef and the version
+  // guard in materializeGithubImportedObject would skip creating a new version on push.
   const discovery = await resolveGithubConnectorDiscovery({
     connectorInstanceId: input.connectorInstance.id,
     context,
+    forceRefresh: true,
   })
   const selectedKeys = discovery.cache.discoveredPlugins
     .filter((plugin) => plugin.supported)
     .map((plugin) => plugin.key)
 
   const applied = await applyGithubConnectorDiscovery({
-    autoImportNewPlugins: true,
+    autoImportNewPlugins,
     connectorInstanceId: input.connectorInstance.id,
+    connectorSyncEventId: input.connectorSyncEventId,
     context,
+    forceRefresh: true,
     selectedKeys,
   })
 
   return {
     autoImported: true as const,
+    autoImportNewPlugins,
+    classification: discovery.cache.classification,
+    createdMarketplace: applied.createdMarketplace
+      ? { id: applied.createdMarketplace.id, name: applied.createdMarketplace.name }
+      : null,
     createdPluginCount: applied.createdPlugins.length,
+    createdPlugins: applied.createdPlugins.map((plugin) => ({ id: plugin.id, name: plugin.name })),
+    discoveredPluginCount: discovery.cache.discoveredPlugins.length,
     materializedConfigObjectCount: applied.materializedConfigObjects.length,
+    materializedConfigObjects: applied.materializedConfigObjects.map((object) => ({
+      id: object.id,
+      objectType: object.objectType,
+      path: object.currentRelativePath,
+      title: object.title,
+      versionId: object.latestVersion?.id ?? null,
+    })),
+    sourceRevisionRef: applied.sourceRevisionRef,
   }
 }
 
@@ -2715,13 +2805,14 @@ async function persistGithubConnectorDiscoveryCache(input: {
   })
 }
 
-async function resolveGithubConnectorDiscovery(input: { connectorInstanceId: ConnectorInstanceId; context: PluginArchActorContext }) {
+async function resolveGithubConnectorDiscovery(input: { connectorInstanceId: ConnectorInstanceId; context: PluginArchActorContext; forceRefresh?: boolean }) {
   const discoveryContext = await getGithubDiscoveryContext(input)
   const targetConfig = discoveryContext.connectorTarget.targetConfigJson && typeof discoveryContext.connectorTarget.targetConfigJson === "object"
     ? discoveryContext.connectorTarget.targetConfigJson as Record<string, unknown>
     : null
   const cached = readGithubDiscoveryCache(targetConfig)
-  if (cached
+  if (!input.forceRefresh
+    && cached
     && cached.branch === discoveryContext.branch
     && cached.ref === discoveryContext.ref
     && cached.repositoryFullName === discoveryContext.repositoryFullName) {
@@ -2873,6 +2964,7 @@ function importedObjectMetadata(input: { objectType: ConnectorMappingRow["object
 async function materializeGithubImportedObject(input: {
   connectorInstance: ReturnType<typeof serializeConnectorInstance>
   connectorMapping: ReturnType<typeof serializeConnectorMapping>
+  connectorSyncEventId?: ConnectorSyncEventId
   connectorTarget: ReturnType<typeof serializeConnectorTarget>
   context: PluginArchActorContext
   externalLocator: string
@@ -2941,7 +3033,7 @@ async function materializeGithubImportedObject(input: {
 
       await tx.insert(ConfigObjectVersionTable).values({
         configObjectId,
-        connectorSyncEventId: null,
+        connectorSyncEventId: input.connectorSyncEventId ?? null,
         createdAt: now,
         createdByOrgMembershipId,
         createdVia: "connector",
@@ -3019,7 +3111,7 @@ async function materializeGithubImportedObject(input: {
 
       await tx.insert(ConfigObjectVersionTable).values({
         configObjectId: binding.configObjectId,
-        connectorSyncEventId: null,
+        connectorSyncEventId: input.connectorSyncEventId ?? null,
         createdAt: now,
         createdByOrgMembershipId,
         createdVia: "connector",
@@ -3076,6 +3168,7 @@ async function materializeGithubImportedObject(input: {
 
 async function materializeGithubImportPlans(input: {
   connectorInstance: ReturnType<typeof serializeConnectorInstance>
+  connectorSyncEventId?: ConnectorSyncEventId
   connectorTarget: ReturnType<typeof serializeConnectorTarget>
   context: PluginArchActorContext
   importPlans: Array<{ mapping: ReturnType<typeof serializeConnectorMapping>; paths: string[] }>
@@ -3120,6 +3213,7 @@ async function materializeGithubImportPlans(input: {
       materializedConfigObjects.push(await materializeGithubImportedObject({
         connectorInstance: input.connectorInstance,
         connectorMapping: plan.mapping,
+        connectorSyncEventId: input.connectorSyncEventId,
         connectorTarget: input.connectorTarget,
         context: input.context,
         externalLocator: path,
@@ -3360,8 +3454,8 @@ export async function getGithubConnectorDiscoveryTree(input: { connectorInstance
   })
 }
 
-export async function applyGithubConnectorDiscovery(input: { autoImportNewPlugins: boolean; connectorInstanceId: ConnectorInstanceId; context: PluginArchActorContext; selectedKeys: string[] }) {
-  const discovery = await resolveGithubConnectorDiscovery({ connectorInstanceId: input.connectorInstanceId, context: input.context })
+export async function applyGithubConnectorDiscovery(input: { autoImportNewPlugins: boolean; connectorInstanceId: ConnectorInstanceId; connectorSyncEventId?: ConnectorSyncEventId; context: PluginArchActorContext; forceRefresh?: boolean; selectedKeys: string[] }) {
+  const discovery = await resolveGithubConnectorDiscovery({ connectorInstanceId: input.connectorInstanceId, context: input.context, forceRefresh: input.forceRefresh })
   const selectedKeySet = new Set(input.selectedKeys.map((key) => key.trim()).filter(Boolean))
   const selectedPlugins = discovery.cache.discoveredPlugins.filter((plugin) => plugin.supported && selectedKeySet.has(plugin.key))
   await db.update(ConnectorInstanceTable).set({
@@ -3421,6 +3515,7 @@ export async function applyGithubConnectorDiscovery(input: { autoImportNewPlugin
 
   const materializedConfigObjects = await materializeGithubImportPlans({
     connectorInstance: discovery.connectorInstance,
+    connectorSyncEventId: input.connectorSyncEventId,
     connectorTarget: discovery.connectorTarget,
     context: input.context,
     importPlans,
@@ -3703,45 +3798,72 @@ export async function enqueueGithubWebhookSync(input: {
       ))
       .limit(1)
 
-    let autoImportSummary: {
-      autoImported: boolean
-      createdPluginCount: number
-      materializedConfigObjectCount: number
-    }
+    // Generate the sync event id up front so config object versions created during auto-import
+    // can be linked back to the triggering sync event.
+    const id = existing[0]?.id ?? createDenTypeId("connectorSyncEvent")
+
+    type AutoImportSummary = Awaited<ReturnType<typeof maybeAutoImportGithubConnectorInstance>>
+    const startedAt = new Date()
+    let autoImportSummary: AutoImportSummary | null = null
+    let autoImportError: string | null = null
     try {
       autoImportSummary = await maybeAutoImportGithubConnectorInstance({
         connectorInstance: row.instance,
+        connectorSyncEventId: id,
         connectorTarget: row.target,
       })
     } catch (error) {
-      autoImportSummary = {
-        autoImported: false,
-        createdPluginCount: 0,
-        materializedConfigObjectCount: 0,
-      }
+      autoImportError = error instanceof Error ? error.message : String(error)
+      // Surface the failure instead of swallowing it silently so a sync that records an event
+      // but never creates a version is diagnosable.
+      console.error(`[connectors][github] auto-import failed for target ${row.target.id} (delivery ${input.deliveryId}): ${autoImportError}`)
     }
 
-    const eventStatus = autoImportSummary.autoImported ? "completed" as const : "queued" as const
-    const completedAt = autoImportSummary.autoImported ? new Date() : null
+    const completedAt = new Date()
+    const eventStatus = autoImportError
+      ? "failed" as const
+      : !autoImportSummary
+        ? "queued" as const
+        : !autoImportSummary.autoImported
+          ? "ignored" as const
+          : autoImportSummary.materializedConfigObjectCount > 0
+            ? "completed" as const
+            : "partial" as const
 
-    const id = existing[0]?.id ?? createDenTypeId("connectorSyncEvent")
+    const summaryJson = {
+      // Inputs
+      deliveryId: input.deliveryId,
+      headSha: input.headSha,
+      installationId: input.installationId,
+      ref: input.ref,
+      repositoryFullName: input.repositoryFullName,
+      repositoryId: input.repositoryId,
+      // Outcome
+      outcome: eventStatus,
+      error: autoImportError,
+      autoImportApplied: autoImportSummary?.autoImported ?? false,
+      autoImportNewPlugins: autoImportSummary?.autoImportNewPlugins ?? null,
+      classification: autoImportSummary?.classification ?? null,
+      resolvedSourceRevisionRef: autoImportSummary?.sourceRevisionRef ?? null,
+      discoveredPluginCount: autoImportSummary?.discoveredPluginCount ?? 0,
+      createdMarketplace: autoImportSummary?.createdMarketplace ?? null,
+      createdPluginCount: autoImportSummary?.createdPluginCount ?? 0,
+      createdPlugins: autoImportSummary?.createdPlugins ?? [],
+      materializedConfigObjectCount: autoImportSummary?.materializedConfigObjectCount ?? 0,
+      materializedConfigObjects: autoImportSummary?.materializedConfigObjects ?? [],
+      // Timing
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: completedAt.getTime() - startedAt.getTime(),
+    }
+
     if (existing[0]) {
       await db.update(ConnectorSyncEventTable).set({
         completedAt,
         externalEventRef: input.deliveryId,
-        startedAt: new Date(),
+        startedAt,
         status: eventStatus,
-        summaryJson: {
-          autoImportApplied: autoImportSummary.autoImported,
-          autoImportCreatedPluginCount: autoImportSummary.createdPluginCount,
-          autoImportMaterializedConfigObjectCount: autoImportSummary.materializedConfigObjectCount,
-          deliveryId: input.deliveryId,
-          headSha: input.headSha,
-          repositoryFullName: input.repositoryFullName,
-          repositoryId: input.repositoryId,
-          queuedAt: new Date().toISOString(),
-          ref: input.ref,
-        },
+        summaryJson,
       }).where(eq(ConnectorSyncEventTable.id, id))
     } else {
       await db.insert(ConnectorSyncEventTable).values({
@@ -3755,19 +3877,9 @@ export async function enqueueGithubWebhookSync(input: {
         organizationId: row.instance.organizationId,
         remoteId: input.repositoryFullName,
         sourceRevisionRef: input.headSha,
-        startedAt: new Date(),
+        startedAt,
         status: eventStatus,
-        summaryJson: {
-          autoImportApplied: autoImportSummary.autoImported,
-          autoImportCreatedPluginCount: autoImportSummary.createdPluginCount,
-          autoImportMaterializedConfigObjectCount: autoImportSummary.materializedConfigObjectCount,
-          deliveryId: input.deliveryId,
-          headSha: input.headSha,
-          installationId: input.installationId,
-          repositoryFullName: input.repositoryFullName,
-          repositoryId: input.repositoryId,
-          ref: input.ref,
-        },
+        summaryJson,
       })
     }
     queuedIds.push(id)

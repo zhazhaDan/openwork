@@ -69,6 +69,7 @@ export function McpAuthModal(props: McpAuthModalProps) {
   const authCopyTimeoutRef = useRef<number | null>(null);
   const previousOpenRef = useRef(false);
   const previousEntryNameRef = useRef<string | null>(null);
+  const reloadAuthRunRef = useRef(false);
 
   const stopStatusPolling = () => {
     if (statusPollRef.current !== null) {
@@ -376,13 +377,14 @@ export function McpAuthModal(props: McpAuthModalProps) {
   }, [props.open, props.entry, props.client, props.reloadRequired]);
 
   useEffect(() => {
-    if (!props.open || !awaitingReload || props.reloadBlocked || !props.onReloadEngine || !props.entry || reloadStarting) {
+    if (!props.open || !awaitingReload || props.reloadBlocked || !props.onReloadEngine || !props.entry || reloadAuthRunRef.current) {
       return;
     }
 
     let cancelled = false;
 
     void (async () => {
+      reloadAuthRunRef.current = true;
       setReloadStarting(true);
       setError(null);
       setNeedsReload(false);
@@ -417,6 +419,7 @@ export function McpAuthModal(props: McpAuthModalProps) {
         setNeedsReload(true);
         setError(message);
       } finally {
+        reloadAuthRunRef.current = false;
         if (!cancelled) {
           setReloadStarting(false);
         }
@@ -425,8 +428,9 @@ export function McpAuthModal(props: McpAuthModalProps) {
 
     return () => {
       cancelled = true;
+      reloadAuthRunRef.current = false;
     };
-  }, [props.open, awaitingReload, props.reloadBlocked, props.onReloadEngine, props.entry, reloadStarting]);
+  }, [props.open, awaitingReload, props.reloadBlocked, props.onReloadEngine, props.entry]);
 
   const handleRetry = () => {
     void startAuth(true);

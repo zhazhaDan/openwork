@@ -59,7 +59,7 @@ export function getConnectedProviderItems(value: ProviderListResponse | null | u
   return (value?.all ?? []).filter(
     (provider) =>
       connected.has(provider.id) &&
-      (provider.source !== "custom" || provider.id === "opencode"),
+      (provider.source !== "custom" || provider.id === "opencode" || Object.keys(provider.models ?? {}).length > 0),
   );
 }
 

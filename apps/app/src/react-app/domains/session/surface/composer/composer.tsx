@@ -1,11 +1,14 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@opencode-ai/sdk/v2/client";
-import { ArrowUp, ChevronRight, FileText, Paperclip, Plug, Settings, Square, Terminal, X, Zap } from "lucide-react";
+import { ArrowUp, ChevronRight, FileText, ListPlus, Paperclip, Plug, Settings, Square, Terminal, X, Zap } from "lucide-react";
 import fuzzysort from "fuzzysort";
+import { OPENWORK_EXTENSION_CATALOG, type McpDirectoryInfo } from "../../../../../app/constants";
 import type { CloudImportedPlugin, CloudImportedPluginFile } from "../../../../../app/cloud/import-state";
 import type { ComposerAttachment, McpServerEntry, McpStatusMap, ModelRef, SkillCard, SlashCommandOption } from "../../../../../app/types";
 import { t } from "../../../../../i18n";
+import { isOpenWorkExtensionEnabled, isOpenWorkExtensionHidden, OPENWORK_EXTENSION_STATE_CHANGED } from "../../../settings/extension-state";
+import { useDesktopRestriction } from "../../../cloud/desktop-config-provider";
 import { ModelBehaviorSelect } from "../../../../../components/model-behavior-select";
 import { ModelSelect } from "../../../../../components/model-select";
 import { LexicalPromptEditor } from "./editor";
@@ -29,15 +32,26 @@ type PastedTextChip = {
 };
 
 type ToolMenuSettingsSection = "commands" | "skills" | "mcps" | "plugins";
-type ToolMenuSection = "commands" | "skills" | "mcps" | `plugin:${string}`;
+type ToolMenuSection = "commands" | "skills" | "mcps" | "extensions" | `plugin:${string}`;
+
+function isComposerExtensionAvailable(entry: McpDirectoryInfo) {
+  const hasSessionSurface = entry.extensionManifest?.contributions?.some((contribution) =>
+    contribution.type === "session-side-panel" || contribution.type === "session-rail-item"
+  ) === true;
+  if (hasSessionSurface) return isOpenWorkExtensionEnabled(entry);
+  return !entry.defaultEnabled || isOpenWorkExtensionEnabled(entry);
+}
 
 type ComposerProps = {
   draft: string;
   mentions: Record<string, "agent" | "file">;
   onDraftChange: (value: string) => void;
   onSend: () => void | Promise<void>;
+  onSteer: () => void | Promise<void>;
+  onQueue: () => void | Promise<void>;
   onStop: () => void | Promise<void>;
   busy: boolean;
+  queuedCount: number;
   disabled: boolean;
   modelUnavailable?: boolean;
   statusLabel: string;
@@ -76,6 +90,7 @@ type ComposerProps = {
   onPasteText: (text: string) => void;
   onUnsupportedFileLinks: (links: string[]) => void;
   pastedText: PastedTextChip[];
+  onExpandPastedText: (id: string) => void;
   onRevealPastedText: (id: string) => void;
   onRemovePastedText: (id: string) => void;
   isRemoteWorkspace: boolean;
@@ -225,6 +240,16 @@ function mcpStatusBadgeClass(status: McpServerStatus) {
   }
 }
 
+function extensionIcon(entry: McpDirectoryInfo, size = 16) {
+  if (entry.iconSrc) {
+    return <img src={entry.iconSrc} alt="" width={size} height={size} loading="lazy" style={{ display: "block" }} />;
+  }
+  if (entry.iconSlug) {
+    return <img src={`https://cdn.simpleicons.org/${entry.iconSlug}`} alt="" width={size} height={size} loading="lazy" style={{ display: "block" }} />;
+  }
+  return <Plug size={size} className="text-gray-9" />;
+}
+
 function formatPluginObjectType(type: string) {
   const normalized = type.trim().toLowerCase();
   if (!normalized) return "File";
@@ -246,6 +271,7 @@ function pluginSlashCommandName(file: CloudImportedPluginFile) {
 }
 
 export function ReactSessionComposer(props: ComposerProps) {
+  const builtInExtensionsDisabled = useDesktopRestriction("allowBuiltInExtensions");
   let fileInput: HTMLInputElement | undefined;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
@@ -284,6 +310,7 @@ export function ReactSessionComposer(props: ComposerProps) {
   const [skillsLoaded, setSkillsLoaded] = useState(Boolean(props.skills));
   const [mcpLoaded, setMcpLoaded] = useState(Boolean(props.mcpServers));
   const [pluginsLoaded, setPluginsLoaded] = useState(Boolean(props.importedPlugins));
+  const [, setExtensionStateVersion] = useState(0);
   const [agentMenuIndex, setAgentMenuIndex] = useState(0);
   const agentItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [dropzoneActive, setDropzoneActive] = useState(false);
@@ -299,6 +326,50 @@ export function ReactSessionComposer(props: ComposerProps) {
   useEffect(() => {
     draftRef.current = props.draft;
   }, [props.draft]);
+
+  // Follow-up message UX (only relevant while the agent is busy):
+  // - Enter does NOT submit; instead it shakes the Steer/Queue buttons.
+  // - Escape arms a "Hit Escape again to stop the agent" prompt for 3s;
+  //   a second Escape within that window stops the agent.
+  const [followupShake, setFollowupShake] = useState(false);
+  const [escapeArmed, setEscapeArmed] = useState(false);
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerFollowupShake = useCallback(() => {
+    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+    setFollowupShake(true);
+    shakeTimerRef.current = setTimeout(() => setFollowupShake(false), 450);
+  }, []);
+
+  const disarmEscape = useCallback(() => {
+    if (escapeTimerRef.current) {
+      clearTimeout(escapeTimerRef.current);
+      escapeTimerRef.current = null;
+    }
+    setEscapeArmed(false);
+  }, []);
+
+  // Reset the escape-to-stop prompt whenever the agent stops being busy.
+  useEffect(() => {
+    if (!props.busy) disarmEscape();
+  }, [props.busy, disarmEscape]);
+
+  useEffect(() => () => {
+    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+    if (escapeTimerRef.current) clearTimeout(escapeTimerRef.current);
+  }, []);
+
+  // Editor submit (Enter). While idle this sends normally; while busy a
+  // follow-up message must be explicitly Steered or Queued, so Enter only
+  // nudges the buttons.
+  const handleEditorSubmit = useCallback(() => {
+    if (props.busy) {
+      triggerFollowupShake();
+      return;
+    }
+    void props.onSend();
+  }, [props.busy, props.onSend, triggerFollowupShake]);
 
   const slashMatch = props.draft.match(/^\/(\S*)$/);
   const slashOpenNext = Boolean(slashMatch);
@@ -387,6 +458,16 @@ export function ReactSessionComposer(props: ComposerProps) {
     });
     commandsRequestRef.current = request;
     return request;
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setExtensionStateVersion((value) => value + 1);
+    window.addEventListener(OPENWORK_EXTENSION_STATE_CHANGED, refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener(OPENWORK_EXTENSION_STATE_CHANGED, refresh);
+      window.removeEventListener("storage", refresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -592,6 +673,12 @@ export function ReactSessionComposer(props: ComposerProps) {
     [props.pastedText],
   );
 
+  const handleExpandPastedText = useCallback((label: string) => {
+    const target = props.pastedText.find((item) => item.label === label);
+    if (!target) return;
+    props.onExpandPastedText(target.id);
+  }, [props.onExpandPastedText, props.pastedText]);
+
   const activeMenu = slashOpen ? "slash" : mentionOpen ? "mention" : null;
   const activeItems = activeMenu === "slash" ? slashFiltered : activeMenu === "mention" ? mentionFiltered : [];
   const toolCommandItems = commands.filter((command) => !command.source || command.source === "command");
@@ -604,6 +691,10 @@ export function ReactSessionComposer(props: ComposerProps) {
   const activePlugin = toolMenuSection.startsWith("plugin:")
     ? pluginSections.find((entry) => entry.section === toolMenuSection)?.plugin ?? null
     : null;
+  const composerExtensions = OPENWORK_EXTENSION_CATALOG.filter((entry) =>
+    !builtInExtensionsDisabled &&
+    !isOpenWorkExtensionHidden(entry) && isComposerExtensionAvailable(entry)
+  );
   const canSend = props.draft.trim().length > 0 || props.attachments.length > 0;
 
   useEffect(() => {
@@ -627,7 +718,17 @@ export function ReactSessionComposer(props: ComposerProps) {
   }, [menuIndex, activeItems.length]);
 
   const applyCommandSelection = (command: SlashCommandOption) => {
+    if (command.source === "skill") {
+      applySkillSelection(command.name);
+      return;
+    }
     props.onDraftChange(`/${command.name} `);
+    setSlashOpen(false);
+    setToolMenuOpen(false);
+  };
+
+  const applySkillSelection = (name: string) => {
+    props.onDraftChange(`[skill ${name}] `);
     setSlashOpen(false);
     setToolMenuOpen(false);
   };
@@ -635,14 +736,20 @@ export function ReactSessionComposer(props: ComposerProps) {
   const applyPluginFileSelection = (file: CloudImportedPluginFile) => {
     const commandName = pluginSlashCommandName(file);
     if (commandName) {
-      applyCommandSelection({
+      if (file.objectType === "skill") applySkillSelection(commandName);
+      else applyCommandSelection({
         id: `plugin:${file.configObjectId}`,
         name: commandName,
-        source: file.objectType === "skill" ? "skill" : "command",
+        source: "command",
       });
       return;
     }
     props.onInsertMention("file", file.path);
+    setToolMenuOpen(false);
+  };
+
+  const applyExtensionSelection = (entry: McpDirectoryInfo) => {
+    props.onDraftChange(entry.composerPrompt ?? `Use ${entry.name} to `);
     setToolMenuOpen(false);
   };
 
@@ -707,6 +814,25 @@ export function ReactSessionComposer(props: ComposerProps) {
       (event.nativeEvent as KeyboardEvent).isComposing === true ||
       event.keyCode === 229;
     if (event.key === "Enter" && imeActive) {
+      return;
+    }
+    // Escape-to-stop while the agent is busy. Only when no menu is open so
+    // Escape can still close menus. First press arms a confirmation prompt
+    // for 3s; a second Escape within that window stops the agent.
+    const anyMenuOpen = agentMenuOpen || toolMenuOpen || Boolean(activeMenu);
+    if (event.key === "Escape" && props.busy && !anyMenuOpen) {
+      event.preventDefault();
+      if (escapeArmed) {
+        disarmEscape();
+        void props.onStop();
+      } else {
+        setEscapeArmed(true);
+        if (escapeTimerRef.current) clearTimeout(escapeTimerRef.current);
+        escapeTimerRef.current = setTimeout(() => {
+          setEscapeArmed(false);
+          escapeTimerRef.current = null;
+        }, 3000);
+      }
       return;
     }
     if (agentMenuOpen) {
@@ -1005,7 +1131,8 @@ export function ReactSessionComposer(props: ComposerProps) {
               disabled={props.disabled}
               placeholder={t("composer.placeholder")}
               onChange={props.onDraftChange}
-              onSubmit={props.onSend}
+              onSubmit={handleEditorSubmit}
+              onExpandPastedText={handleExpandPastedText}
               onPasteText={props.onPasteText}
               onPaste={(event) => {
                 // Paste policy:
@@ -1140,6 +1267,7 @@ export function ReactSessionComposer(props: ComposerProps) {
                           {([
                             ["commands", t("dashboard.commands")],
                             ["skills", t("dashboard.skills")],
+                            ["extensions", "Extensions"],
                             ["mcps", t("composer.mcps_label")],
                           ] as const).map(([section, label]) => (
                             <button
@@ -1251,6 +1379,35 @@ export function ReactSessionComposer(props: ComposerProps) {
                               </div>
                             )
                           ) : null}
+                          {toolMenuSection === "extensions" ? (
+                            composerExtensions.length > 0 ? (
+                              <div className="grid gap-1">
+                                {composerExtensions.map((entry) => (
+                                  <button
+                                    key={entry.id ?? entry.serverName ?? entry.name}
+                                    type="button"
+                                    className="flex w-full items-start gap-3 rounded-[16px] px-3 py-2.5 text-left text-gray-11 transition-colors hover:bg-gray-2/70"
+                                    onClick={() => applyExtensionSelection(entry)}
+                                  >
+                                    <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-white shadow-sm">
+                                      {extensionIcon(entry, 16)}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="truncate text-xs font-semibold text-gray-11">{entry.name}</div>
+                                        {entry.defaultEnabled ? (
+                                          <span className="shrink-0 rounded-full bg-green-3 px-2 py-0.5 text-[10px] font-medium text-green-11">Enabled</span>
+                                        ) : null}
+                                      </div>
+                                      <div className="truncate text-xs text-gray-10">{entry.description}</div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="px-3 py-2 text-xs text-gray-10">No extensions enabled. Open Extensions to enable them.</div>
+                            )
+                          ) : null}
                           {activePlugin ? (
                             activePlugin.files.length > 0 ? (
                               <div className="grid gap-1">
@@ -1289,27 +1446,72 @@ export function ReactSessionComposer(props: ComposerProps) {
               </div>
 
               {/*
-                Single action button that toggles between Stop and Run task.
-                When busy with no draft: Stop (cancels current run).
-                When busy with a draft: Run task (queues a follow-up).
-                When idle: Run task.
+                Action area.
+                - Idle: single "Run task" button (sends immediately).
+                - Busy: follow-up controls — "Steer" sends now (the agent
+                  adjusts mid-task), "Queue" sends once the agent is idle,
+                  and an outline "Stop" cancels the run. Steer/Queue are
+                  disabled until there's something to send. Pressing Enter
+                  while busy shakes Steer/Queue to prompt an explicit choice.
+                  Escape arms a "Hit Escape again to stop the agent" prompt.
               */}
               <div className="ml-auto flex shrink-0 items-end gap-1.5">
-                {props.busy && !canSend ? (
-                  <button
-                    type="button"
-                    onClick={props.onStop}
-                    className="inline-flex h-9 max-h-9 items-center gap-2 rounded-full bg-gray-12 px-4 text-[13px] font-medium text-gray-1 transition-colors hover:bg-gray-11"
-                    title={t("composer.stop")}
-                  >
-                    <Square size={12} fill="currentColor" />
-                    <span>{t("composer.stop")}</span>
-                  </button>
+                {props.busy ? (
+                  <>
+                    {escapeArmed ? (
+                      <span className="self-center pr-1 text-[12px] font-medium text-gray-10">
+                        {t("composer.escape_to_stop")}
+                      </span>
+                    ) : null}
+                    <div className={`flex items-end gap-1.5 ${followupShake ? "animate-shake" : ""}`}>
+                      <button
+                        type="button"
+                        onClick={canSend ? props.onSteer : undefined}
+                        disabled={!canSend}
+                        className={`inline-flex h-9 max-h-9 items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-colors ${
+                          canSend
+                            ? "bg-[var(--dls-accent)] text-[var(--dls-accent-fg)] hover:bg-[var(--dls-accent-hover)]"
+                            : "bg-gray-4 text-gray-10"
+                        }`}
+                        title={t("composer.steer_hint")}
+                      >
+                        <Zap size={14} />
+                        <span>{t("composer.steer")}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={canSend ? props.onQueue : undefined}
+                        disabled={!canSend}
+                        className={`relative inline-flex h-9 max-h-9 items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-colors ${
+                          canSend
+                            ? "bg-gray-12 text-gray-1 hover:bg-gray-11"
+                            : "bg-gray-4 text-gray-10"
+                        }`}
+                        title={t("composer.queue_hint")}
+                      >
+                        <ListPlus size={14} />
+                        <span>
+                          {props.queuedCount > 0
+                            ? t("composer.queued_count", { count: props.queuedCount })
+                            : t("composer.queue")}
+                        </span>
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={props.onStop}
+                      className="inline-flex h-9 max-h-9 items-center gap-2 rounded-full border border-dls-border bg-transparent px-4 text-[13px] font-medium text-gray-11 transition-colors hover:bg-gray-3"
+                      title={t("composer.stop")}
+                    >
+                      <Square size={12} fill="currentColor" />
+                      <span>{t("composer.stop")}</span>
+                    </button>
+                  </>
                 ) : (
                   <button
                     type="button"
-                    onClick={canSend ? props.onSend : props.busy ? props.onStop : undefined}
-                    disabled={props.disabled || (!canSend && !props.busy)}
+                    onClick={canSend ? props.onSend : undefined}
+                    disabled={props.disabled || !canSend}
                     className={`inline-flex h-9 max-h-9 items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-colors ${
                       !canSend || props.disabled
                         ? "bg-gray-4 text-gray-10"

@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "@openwork-ee/den-db/drizzle"
+import { and, eq, gte, isNull, sql } from "@openwork-ee/den-db/drizzle"
 import { TelemetryEventTable, MemberTable, InvitationTable } from "@openwork-ee/den-db/schema"
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
 import type { Hono } from "hono"
@@ -108,7 +108,7 @@ export function registerTelemetryRoutes<T extends { Variables: TelemetryRouteVar
         db
           .select({ count: sql<number>`count(*)` })
           .from(MemberTable)
-          .where(eq(MemberTable.organizationId, orgId)),
+          .where(and(eq(MemberTable.organizationId, orgId), isNull(MemberTable.removedAt))),
         db
           .select({ count: sql<number>`count(*)` })
           .from(InvitationTable)

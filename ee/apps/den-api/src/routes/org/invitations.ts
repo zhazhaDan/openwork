@@ -1,6 +1,6 @@
-import { and, eq, gt } from "@openwork-ee/den-db/drizzle"
+import { and, eq, gt, isNull } from "@openwork-ee/den-db/drizzle"
 import { AuthUserTable, InvitationTable, MemberTable } from "@openwork-ee/den-db/schema"
-import { normalizeDenTypeId } from "@openwork-ee/utils/typeid"
+import { createDenTypeId, normalizeDenTypeId } from "@openwork-ee/utils/typeid"
 import type { Hono } from "hono"
 import { describeRoute } from "hono-openapi"
 import { z } from "zod"
@@ -8,10 +8,11 @@ import { db } from "../../db.js"
 import { jsonValidator, paramValidator, requireUserMiddleware, resolveOrganizationContextMiddleware } from "../../middleware/index.js"
 import { denTypeIdSchema, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, successSchema, unauthorizedSchema } from "../../openapi.js"
 import { getOrganizationLimitStatus } from "../../organization-limits.js"
-import { isEmailAllowedForOrganization, listAssignableRoles } from "../../orgs.js"
+import { runPostOrganizationMemberChangeHooks } from "../../organization-member-hooks.js"
+import { isEmailAllowedForOrganization, listAssignableRoles, removeOrganizationMember } from "../../orgs.js"
 import { DenEmailSendError, sendEmail } from "../../utils/email/send-email.js"
 import type { OrgRouteVariables } from "./shared.js"
-import { buildInvitationLink, createInvitationId, ensureInviteManager, idParamSchema, normalizeRoleName } from "./shared.js"
+import { buildInvitationLink, createInvitationId, createInvitationToken, ensureInviteManager, idParamSchema, normalizeRoleName } from "./shared.js"
 
 const inviteMemberSchema = z.object({
   email: z.string().email(),
@@ -23,6 +24,7 @@ const invitationResponseSchema = z.object({
   email: z.string().email(),
   role: z.string(),
   expiresAt: z.string().datetime(),
+  inviteToken: z.string(),
 }).meta({ ref: "InvitationResponse" })
 
 const invitationEmailFailedSchema = z.object({
@@ -98,7 +100,7 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
       .select({ id: MemberTable.id })
       .from(MemberTable)
       .innerJoin(AuthUserTable, eq(MemberTable.userId, AuthUserTable.id))
-      .where(and(eq(MemberTable.organizationId, payload.organization.id), eq(AuthUserTable.email, email)))
+      .where(and(eq(MemberTable.organizationId, payload.organization.id), eq(AuthUserTable.email, email), isNull(MemberTable.removedAt)))
       .limit(1)
 
     if (existingMembers[0]) {
@@ -136,12 +138,39 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
 
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7)
     const invitationId = existingInvitation[0]?.id ?? createInvitationId()
+    const inviteToken = createInvitationToken()
+    let createdOrgMemberId: typeof MemberTable.$inferSelect.id | null = null
 
     if (existingInvitation[0]) {
       await db
         .update(InvitationTable)
-        .set({ role, inviterId: normalizeDenTypeId("user", user.id), expiresAt })
+        .set({ role, inviterId: normalizeDenTypeId("user", user.id), orgMemberId: payload.currentMember.id, inviteToken, expiresAt })
         .where(eq(InvitationTable.id, existingInvitation[0].id))
+
+      const invitedMemberRows = await db
+        .select({ id: MemberTable.id })
+        .from(MemberTable)
+        .where(and(eq(MemberTable.inviteId, existingInvitation[0].id), eq(MemberTable.organizationId, payload.organization.id), isNull(MemberTable.removedAt)))
+        .limit(1)
+
+      if (invitedMemberRows[0]) {
+        await db
+          .update(MemberTable)
+          .set({ role, invitedByOrgMember: payload.currentMember.id })
+          .where(eq(MemberTable.id, invitedMemberRows[0].id))
+      } else {
+        const memberId = createDenTypeId("member")
+        await db.insert(MemberTable).values({
+          id: memberId,
+          organizationId: payload.organization.id,
+          userId: null,
+          inviteId: existingInvitation[0].id,
+          invitedByOrgMember: payload.currentMember.id,
+          role,
+          joinedAt: null,
+        })
+        createdOrgMemberId = memberId
+      }
     } else {
       await db.insert(InvitationTable).values({
         id: invitationId,
@@ -150,8 +179,26 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
         role,
         status: "pending",
         inviterId: normalizeDenTypeId("user", user.id),
+        orgMemberId: payload.currentMember.id,
+        inviteToken,
         expiresAt,
       })
+
+      const memberId = createDenTypeId("member")
+      await db.insert(MemberTable).values({
+        id: memberId,
+        organizationId: payload.organization.id,
+        userId: null,
+        inviteId: invitationId,
+        invitedByOrgMember: payload.currentMember.id,
+        role,
+        joinedAt: null,
+      })
+      createdOrgMemberId = memberId
+    }
+
+    if (createdOrgMemberId) {
+      await runPostOrganizationMemberChangeHooks({ organizationId: payload.organization.id, memberId: createdOrgMemberId, change: "added" })
     }
 
     try {
@@ -159,7 +206,7 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
         to: email,
         template: "organizationInvite",
         props: {
-          inviteLink: buildInvitationLink(invitationId),
+          inviteLink: buildInvitationLink(inviteToken),
           invitedByName: user.name ?? user.email ?? "OpenWork",
           invitedByEmail: user.email ?? "",
           organizationName: payload.organization.name,
@@ -192,7 +239,7 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
       throw error
     }
 
-    return c.json({ invitationId, email, role, expiresAt }, existingInvitation[0] ? 200 : 201)
+    return c.json({ invitationId, email, role, expiresAt, inviteToken }, existingInvitation[0] ? 200 : 201)
     },
   )
 
@@ -238,7 +285,22 @@ export function registerOrgInvitationRoutes<T extends { Variables: OrgRouteVaria
       return c.json({ error: "invitation_not_found" }, 404)
     }
 
+    const invitedMemberRows = await db
+      .select({ id: MemberTable.id })
+      .from(MemberTable)
+      .where(and(eq(MemberTable.inviteId, invitationId), eq(MemberTable.organizationId, payload.organization.id), isNull(MemberTable.joinedAt), isNull(MemberTable.removedAt)))
+      .limit(1)
+
     await db.update(InvitationTable).set({ status: "canceled" }).where(eq(InvitationTable.id, invitationId))
+
+    if (invitedMemberRows[0]) {
+      await removeOrganizationMember({
+        organizationId: payload.organization.id,
+        memberId: invitedMemberRows[0].id,
+        removedByOrgMemberId: payload.currentMember.id,
+      })
+    }
+
     return c.json({ success: true })
     },
   )

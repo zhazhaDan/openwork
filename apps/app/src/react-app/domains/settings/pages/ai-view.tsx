@@ -1,5 +1,6 @@
 /** @jsxImportSource react */
 import { Button } from "@/components/ui/button";
+import type { ReactNode } from "react";
 
 import { t } from "@/i18n";
 import { ProviderIcon } from "../../../design-system/provider-icon";
@@ -42,6 +43,7 @@ export type AiSettingsViewProps = {
   cloudProviderIds?: Set<string>;
   showOpenWorkModelsSubscribe?: boolean;
   onSubscribeOpenWorkModels?: () => void | Promise<void>;
+  cloudProvidersView?: ReactNode;
 };
 
 function providerSourceLabel(source?: ConnectedProvider["source"]) {
@@ -167,6 +169,7 @@ export function AiSettingsView(props: AiSettingsViewProps) {
         <LayoutSectionItemFootnote>{t("settings.api_keys_info")}</LayoutSectionItemFootnote>
       </LayoutSection>
 
+      {props.cloudProvidersView}
 
     </LayoutStack>
   );

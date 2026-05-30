@@ -53,8 +53,14 @@ vendor/opencode/
 
 # OpenWork workspace-local artifacts
 .opencode/openwork/
+.opencode/agents/openwork.md
+.opencode/openwork.json
+opencode.jsonc
 .vercel
 .env*.local
 .claude/*
+.security
+transcript-analysis
 .tron
+apps/desktop/src-tauri/sidecars
 apps/desktop/src-tauri

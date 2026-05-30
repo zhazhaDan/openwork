@@ -1,5 +1,4 @@
 /** @jsxImportSource react */
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 
 import { t } from "@/i18n";
@@ -18,9 +17,6 @@ import {
 
 export type PreferencesViewProps = {
   busy: boolean;
-  defaultModelLabel: string;
-  defaultModelRef: string;
-  onChangeDefaultModel: () => void;
   showThinking: boolean;
   onToggleShowThinking: () => void;
   autoCompactContext: boolean;
@@ -36,23 +32,6 @@ export function PreferencesView(props: PreferencesViewProps) {
           <LayoutSectionTitle>{t("settings.model_title")}</LayoutSectionTitle>
           <LayoutSectionDescription>{t("settings.model_section_desc")}</LayoutSectionDescription>
         </LayoutSectionHeader>
-
-        {/* Default model */}
-        <LayoutSectionItem>
-          <LayoutSectionItemHeader>
-            <LayoutSectionItemTitle>{props.defaultModelLabel}</LayoutSectionItemTitle>
-            <LayoutSectionItemDescription className="truncate font-mono">{props.defaultModelRef}</LayoutSectionItemDescription>
-            <LayoutSectionItemHeaderActions>
-              <Button
-                variant="outline"
-                onClick={props.onChangeDefaultModel}
-                disabled={props.busy}
-              >
-                {t("settings.change")}
-              </Button>
-            </LayoutSectionItemHeaderActions>
-          </LayoutSectionItemHeader>
-        </LayoutSectionItem>
 
         {/* Show reasoning */}
         <LayoutSectionItem>

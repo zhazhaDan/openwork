@@ -1,5 +1,5 @@
 import Stripe from "stripe"
-import { and, eq, sql } from "@openwork-ee/den-db/drizzle"
+import { and, eq, isNull, sql } from "@openwork-ee/den-db/drizzle"
 import {
   MemberTable,
   OrgSubscriptionStatus,
@@ -82,7 +82,7 @@ async function activeMemberCount(organizationId: OrgId) {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(MemberTable)
-    .where(eq(MemberTable.organizationId, organizationId))
+    .where(and(eq(MemberTable.organizationId, organizationId), isNull(MemberTable.removedAt)))
   return Math.max(0, Number(row?.count ?? 0))
 }
 

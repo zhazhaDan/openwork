@@ -1,13 +1,16 @@
 /** @jsxImportSource react */
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Download, ExternalLink, FileText, Loader2, X } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, ExternalLink, X } from "lucide-react";
 
-import type { OpenworkServerClient } from "../../../../app/lib/openwork-server";
-import { openDesktopPath } from "../../../../app/lib/desktop";
+import type { OpenworkServerClient } from "@/app/lib/openwork-server";
+import { openDesktopPath } from "@/app/lib/desktop";
 import { Button } from "@/components/ui/button";
-import { MarkdownBlock } from "../surface/markdown";
-import { cn } from "@/lib/utils";
-import type { OpenTarget } from "./open-target";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatFileSize } from "@/lib/utils";
+import { type ArtifactPanelTab, usePanelTabStore } from "../panel/panel-tab-store";
+import { isCollectibleArtifactTarget, type BinaryData, type Data, type OpenTarget, type TextData } from "./open-target";
+import { HTMLPreview, ImagePreview, MarkdownPreview, PlainText, PreviewError, PreviewLoading, PreviewUnavailable } from "./preview";
 
 const ArtifactTextEditor = lazy(() =>
   import("./artifact-text-editor").then((module) => ({ default: module.ArtifactTextEditor })),
@@ -16,266 +19,354 @@ const ArtifactSpreadsheetEditor = lazy(() =>
   import("./artifact-spreadsheet-editor").then((module) => ({ default: module.ArtifactSpreadsheetEditor })),
 );
 
+const EMPTY_TRANSCRIPT_TARGETS: OpenTarget[] = [];
+
 type ArtifactPanelProps = {
+  sessionId: string;
+  tab: ArtifactPanelTab;
+  client: OpenworkServerClient | null;
+  workspaceId: string | null;
+  workspaceRoot: string;
+  isRemoteWorkspace?: boolean;
+  onClose: () => void;
+};
+
+type ArtifactPanelViewProps = {
   client: OpenworkServerClient;
   workspaceId: string;
   workspaceRoot: string;
   isRemoteWorkspace?: boolean;
   target: OpenTarget;
-  targets?: OpenTarget[];
-  onSelectTarget?: (target: OpenTarget) => void;
   onClose: () => void;
 };
 
-type LoadState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "text"; content: string; updatedAt: number | null }
-  | { status: "binary"; url: string; data: ArrayBuffer; contentType: string | null; updatedAt: number | null };
+type ArtifactQueryState =
+  | (TextData & { updatedAt: number | null })
+  | (BinaryData & { contentType: string | null; updatedAt: number | null });
+
+type SaveArtifactInput = Data & { baseUpdatedAt: number | null };
 
 function absoluteWorkspacePath(root: string, path: string) {
   const cleanRoot = root.trim().replace(/[/\\]+$/, "");
   const cleanPath = path.trim().replace(/^\.\//, "");
+  
   return cleanRoot ? `${cleanRoot}/${cleanPath}` : cleanPath;
 }
 
-function ArtifactTargetIcon({ target, className = "size-3.5" }: { target: OpenTarget; className?: string }) {
-  if (target.preview === "sheet") {
-    return (
-      <span className={cn("inline-flex min-w-5 shrink-0 items-center justify-center rounded-[4px] border border-emerald-500/30 bg-emerald-500/10 px-0.5 text-[7px] font-bold leading-none text-emerald-700", className)}>
-        XLS
-      </span>
-    );
-  }
-  if (target.preview === "markdown") {
-    return (
-      <span className={cn("inline-flex shrink-0 items-center justify-center rounded-[4px] border border-primary/25 bg-primary/10 font-bold leading-none text-primary", className, "text-[7px]")}>
-        MD
-      </span>
-    );
-  }
-  return <FileText className={cn(className, "shrink-0 text-primary")} />;
+function isTextContent(target: OpenTarget): boolean {
+  return ["markdown", "text", "sheet", "html"].includes(target.preview) && !/\.(xlsx|xls|ods)$/i.test(target.value);
 }
 
-export function ArtifactPanel({ client, workspaceId, workspaceRoot, isRemoteWorkspace = false, target, targets = [], onSelectTarget, onClose }: ArtifactPanelProps) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+export function ArtifactPanel({ sessionId, tab, client, workspaceId, workspaceRoot, isRemoteWorkspace = false, onClose }: ArtifactPanelProps) {
+  const transcriptTargets = usePanelTabStore((state) => state.transcriptArtifactTargets[sessionId] ?? EMPTY_TRANSCRIPT_TARGETS);
+  const artifactTargets = useMemo(() => transcriptTargets.filter(isCollectibleArtifactTarget), [transcriptTargets]);
+  const target = artifactTargets.find((item) => item.id === tab.id) ?? null;
+
+  if (!target || !client || !workspaceId) {
+    return null;
+  }
+
+  return (
+    <ArtifactPanelView
+      client={client}
+      workspaceId={workspaceId}
+      workspaceRoot={workspaceRoot}
+      isRemoteWorkspace={isRemoteWorkspace}
+      target={target}
+      onClose={onClose}
+    />
+  );
+}
+
+function ArtifactPanelView({ client, workspaceId, workspaceRoot, isRemoteWorkspace = false, target, onClose }: ArtifactPanelViewProps) {
+  const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const canReadAsText = ["markdown", "text", "sheet", "html"].includes(target.preview) && !/\.(xlsx|xls|ods)$/i.test(target.value);
-  const canEditText = target.kind === "file" && canReadAsText;
-  const isDirectTextEdit = canEditText && target.preview === "markdown";
+  const isDirectTextEdit = isTextContent(target) && target.preview === "markdown";
   const externalPath = useMemo(() => target.kind === "file" ? absoluteWorkspacePath(workspaceRoot, target.value) : target.value, [target.kind, target.value, workspaceRoot]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setState({ status: "loading" });
-    setEditing(false);
-    setDraft("");
-    setSaveMessage(null);
-
-    async function load() {
-      try {
-        if (target.kind === "url") {
-          setState({ status: "error", message: "URLs open in browser tabs." });
-          return;
-        }
-        if (target.exists === false) {
-          setState({ status: "error", message: "File not found in this workspace." });
-          return;
-        }
-        if (canReadAsText) {
-          const result = await client.readWorkspaceFile(workspaceId, target.value);
-          if (!cancelled) {
-            setState({ status: "text", content: result.content, updatedAt: result.updatedAt ?? null });
-            setDraft(result.content);
-          }
-          return;
-        }
-        const result = await client.downloadWorkspaceFile(workspaceId, target.value);
-        objectUrl = URL.createObjectURL(new Blob([result.data], { type: result.contentType ?? "application/octet-stream" }));
-        if (!cancelled) setState({ status: "binary", url: objectUrl, data: result.data, contentType: result.contentType, updatedAt: target.updatedAt ?? null });
-      } catch (error) {
-        if (!cancelled) setState({ status: "error", message: error instanceof Error ? error.message : "Failed to load artifact" });
+  const { data, error, isError, isLoading } = useQuery<ArtifactQueryState>({
+    queryKey: ["artifact-panel", workspaceId, target.id] as const,
+    queryFn: async () => {
+      if (target.kind === "url") {
+        throw new Error("URLs open in browser tabs.");
       }
+      else if (target.exists === false) {
+        throw new Error("File not found in this workspace.");
+      }
+
+      if (isTextContent(target)) {
+        const result = await client.readWorkspaceFile(workspaceId, target.value);
+        
+        return { kind: "text", data: result.content, updatedAt: result.updatedAt ?? null };
+      }
+
+      const result = await client.downloadWorkspaceFile(workspaceId, target.value);
+
+      return { kind: "binary", data: result.data, contentType: result.contentType, updatedAt: target.updatedAt ?? null };
+    },
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+
+  const [binaryObjectUrl, setBinaryObjectUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data || data.kind !== "binary") {
+      setBinaryObjectUrl(null);
+
+      return;
     }
 
-    void load();
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [canReadAsText, client, target, workspaceId]);
+    const url = URL.createObjectURL(new Blob([data.data], { type: data.contentType ?? "application/octet-stream" }));
+
+    setBinaryObjectUrl(url);
+
+    return () => URL.revokeObjectURL(url);
+  }, [data]);
+
+  useEffect(() => {
+    setEditing(false);
+    setDraft("");
+  }, [target.id, workspaceId]);
+
+  useEffect(() => {
+    if (data?.kind === "text") {
+      setDraft(data.data);
+    }
+  }, [data]);
+
+  const { mutate, mutateAsync, isPending: isSaving } = useMutation({
+    mutationFn: async (input: SaveArtifactInput) => {
+      if (target.kind !== "file") {
+        throw new Error("Cannot save non-file artifact.");
+      }
+
+      if (input.kind === "text") {
+        return client.writeWorkspaceFile(workspaceId, { path: target.value, content: input.data, baseUpdatedAt: input.baseUpdatedAt });
+      }
+
+      return client.writeWorkspaceBinaryFile(workspaceId, { path: target.value, data: input.data, baseUpdatedAt: input.baseUpdatedAt });
+    },
+    onSuccess: (result, input) => {
+      queryClient.setQueryData<ArtifactQueryState>(
+        ["artifact-panel", workspaceId, target.id] as const,
+        input.kind === "text"
+          ? { kind: "text", data: input.data, updatedAt: result.updatedAt ?? null }
+          : { kind: "binary", data: input.data, contentType: data?.kind === "binary" ? data.contentType : null, updatedAt: result.updatedAt ?? null },
+      );
+
+      if (input.kind === "text") {
+        setDraft(input.data);
+      }
+    },
+  });
 
   const download = async () => {
-    if (target.kind === "url") return;
-      const result = await client.downloadWorkspaceFile(workspaceId, target.value);
-      const url = URL.createObjectURL(new Blob([result.data], { type: result.contentType ?? "application/octet-stream" }));
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = target.name;
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (target.kind === "url") {
+      return;
+    }
+    
+    const result = await client.downloadWorkspaceFile(workspaceId, target.value);
+    const url = URL.createObjectURL(new Blob([result.data], { type: result.contentType ?? "application/octet-stream" }));
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = target.name;
+    anchor.click();
+
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const openExternal = async () => {
-    if (target.kind === "url") window.open(target.value, "_blank", "noopener,noreferrer");
+    if (target.kind === "url") {
+      window.open(target.value, "_blank", "noopener,noreferrer");
+
+      return;
+    }
     else if (!isRemoteWorkspace) {
       void openDesktopPath(externalPath);
-    } else {
-      await download();
+
+      return;
     }
+
+    await download();
   };
 
-  const save = async () => {
-    if (!canEditText || state.status !== "text") return;
-    setSaving(true);
-    setSaveMessage(null);
-    try {
-      const result = await client.writeWorkspaceFile(workspaceId, {
-        path: target.value,
-        content: draft,
-        baseUpdatedAt: state.updatedAt,
-      });
-      setState({ status: "text", content: draft, updatedAt: result.updatedAt ?? null });
-      setEditing(false);
-      setSaveMessage("Saved");
-    } catch (error) {
-      setSaveMessage(error instanceof Error ? error.message : "Save failed");
-    } finally {
-      setSaving(false);
+  const save = () => {
+    if (target.kind !== "file" || !isTextContent(target) || data?.kind !== "text") {
+      return;
     }
+
+    mutate(
+      {
+        kind: "text",
+        data: draft,
+        baseUpdatedAt: data.updatedAt,
+      },
+      { onSuccess: () => setEditing(false) },
+    );
   };
 
-  const saveTextContent = async (content: string) => {
-    if (target.kind !== "file") return;
-    setSaving(true);
-    setSaveMessage(null);
-    try {
-      const baseUpdatedAt = state.status === "text" ? state.updatedAt : target.updatedAt ?? null;
-      const result = await client.writeWorkspaceFile(workspaceId, { path: target.value, content, baseUpdatedAt });
-      setState({ status: "text", content, updatedAt: result.updatedAt ?? null });
-      setDraft(content);
-      setSaveMessage("Saved");
-    } catch (error) {
-      setSaveMessage(error instanceof Error ? error.message : "Save failed");
-      throw error;
-    } finally {
-      setSaving(false);
+  const saveSpreadsheetContent = async (payload: Data) => {
+    if (target.kind !== "file") {
+      return;
     }
-  };
 
-  const saveBinaryContent = async (data: ArrayBuffer) => {
-    if (target.kind !== "file") return;
-    setSaving(true);
-    setSaveMessage(null);
-    try {
-      const baseUpdatedAt = state.status === "binary" ? state.updatedAt : target.updatedAt ?? null;
-      const result = await client.writeWorkspaceBinaryFile(workspaceId, { path: target.value, data, baseUpdatedAt });
-      const url = URL.createObjectURL(new Blob([data], { type: state.status === "binary" ? state.contentType ?? "application/octet-stream" : "application/octet-stream" }));
-      setState({ status: "binary", url, data, contentType: state.status === "binary" ? state.contentType : null, updatedAt: result.updatedAt ?? null });
-      setSaveMessage("Saved");
-    } catch (error) {
-      setSaveMessage(error instanceof Error ? error.message : "Save failed");
-      throw error;
-    } finally {
-      setSaving(false);
-    }
+    await mutateAsync({
+      ...payload,
+      baseUpdatedAt: data?.kind === payload.kind ? data.updatedAt : target.updatedAt ?? null,
+    });
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground">
-            <ArtifactTargetIcon target={target} className="size-4" />
-            <span className="truncate">{target.name}</span>
+      <div className="shrink-0 border-b border-border bg-background mac:bg-background/80 mac:backdrop-blur-2xl mac:backdrop-saturate-150">
+        <div className="flex h-10 items-center gap-2 pe-2 ps-4">
+          <div className="min-w-0 flex-1 flex items-center gap-1.5">
+            <h3 className="text-sm font-medium text-foreground">
+              <span className="truncate">{target.name}</span>
+            </h3>
+            <span className="truncate text-xs text-muted-foreground">
+              {target.exists === false ? "missing" : target.size !== undefined ? `${formatFileSize(target.size)}` : ""}
+            </span>
           </div>
-          <div className="truncate text-[11px] text-muted-foreground">
-            {target.value}{target.exists === false ? " · missing" : target.size ? ` · ${target.size} bytes` : ""}
-          </div>
-        </div>
-        {canEditText && state.status === "text" ? (
-          editing || isDirectTextEdit ? (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => { setDraft(state.content); setEditing(false); }} disabled={saving}>Discard</Button>
-              <Button variant="default" size="sm" onClick={() => void save()} disabled={saving || draft === state.content}>{saving ? "Saving" : "Save"}</Button>
-            </>
-          ) : (
-            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button>
-          )
-        ) : null}
-        {target.kind === "file" ? (
-          <Button variant="ghost" size="icon-sm" onClick={() => void download()} aria-label="Download artifact" title="Download artifact">
-            <Download />
-          </Button>
-        ) : null}
-        <Button variant="ghost" size="icon-sm" onClick={() => void openExternal()} aria-label={isRemoteWorkspace ? "Download artifact" : "Open externally"} title={isRemoteWorkspace ? "Download artifact" : "Open externally"}>
-          <ExternalLink />
-        </Button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close artifact" title="Close artifact">
-          <X />
-        </Button>
-      </div>
-      {targets.length > 0 ? (
-        <div className="no-scrollbar flex shrink-0 gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
-          {targets.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={cn(
-                "flex max-w-44 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-left text-[11px] transition-colors",
-                item.id === target.id
-                  ? "border-primary/40 bg-primary/10 text-primary"
-                  : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
-                item.exists === false && "opacity-60",
+          {isTextContent(target) && data?.kind === "text" ? (
+            editing || isDirectTextEdit ? (
+              <>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={(
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (data?.kind === "text") {
+                            setDraft(data.data);
+                          }
+                          setEditing(false);
+                        }}
+                        disabled={isSaving}
+                      >
+                        Discard
+                      </Button>
+                    )}
+                  />
+                  <TooltipContent>Discard changes</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={(
+                      <Button variant="default" size="sm" onClick={() => void save()} disabled={isSaving || draft === data.data}>{isSaving ? "Saving" : "Save"}</Button>
+                    )}
+                  />
+                  <TooltipContent>Save changes</TooltipContent>
+                </Tooltip>
+              </>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={(
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button>
+                  )}
+                />
+                <TooltipContent>Edit artifact</TooltipContent>
+              </Tooltip>
+            )
+          ) : null}
+          {target.kind === "file" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={(
+                  <Button variant="ghost" size="icon-sm" onClick={() => void download()} aria-label="Download artifact">
+                    <Download />
+                  </Button>
+                )}
+              />
+              <TooltipContent>Download artifact</TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger
+              render={(
+                <Button variant="ghost" size="icon-sm" onClick={() => void openExternal()} aria-label={isRemoteWorkspace ? "Download artifact" : "Open externally"}>
+                  <ExternalLink />
+                </Button>
               )}
-              title={`${item.value}${item.exists === false ? " (missing)" : ""}`}
-              onClick={() => onSelectTarget?.(item)}
-            >
-              <ArtifactTargetIcon target={item} />
-              <span className="truncate">{item.name}{item.exists === false ? " · missing" : ""}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {saveMessage ? <div className="shrink-0 border-b border-border px-3 py-1 text-[11px] text-muted-foreground">{saveMessage}</div> : null}
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {state.status === "loading" ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground"><Loader2 className="size-4 animate-spin" /></div>
-        ) : state.status === "error" ? (
-          <div className="p-4 text-sm text-muted-foreground">{state.message}</div>
-        ) : state.status === "text" && (editing || isDirectTextEdit) ? (
-          <Suspense fallback={<div className="flex h-full items-center justify-center text-muted-foreground"><Loader2 className="size-4 animate-spin" /></div>}>
-            <ArtifactTextEditor value={draft} language={target.preview === "markdown" ? "markdown" : "text"} onChange={setDraft} />
-          </Suspense>
-        ) : target.preview === "markdown" && state.status === "text" ? (
-          <div className="h-full overflow-auto p-4"><MarkdownBlock text={state.content} /></div>
-        ) : target.preview === "sheet" ? (
-          <Suspense fallback={<div className="flex h-full items-center justify-center text-muted-foreground"><Loader2 className="size-4 animate-spin" /></div>}>
-            <ArtifactSpreadsheetEditor
-              name={target.name}
-              text={state.status === "text" ? state.content : undefined}
-              data={state.status === "binary" ? state.data : undefined}
-              saving={saving}
-              onSaveText={saveTextContent}
-              onSaveBinary={saveBinaryContent}
             />
-          </Suspense>
-        ) : target.preview === "html" && state.status === "text" ? (
-          <iframe srcDoc={state.content} title={target.name} className="h-full w-full border-0" sandbox="allow-scripts allow-same-origin" />
-        ) : target.preview === "image" && state.status === "binary" ? (
-          <div className="flex h-full items-center justify-center overflow-auto bg-muted/30 p-3"><img src={state.url} alt={target.name} className="max-h-full max-w-full object-contain" /></div>
-        ) : state.status === "binary" && (target.preview === "pdf" || target.preview === "html") ? (
-          <iframe src={state.url} title={target.name} className="h-full w-full border-0" sandbox="allow-scripts allow-same-origin" />
-        ) : state.status === "text" ? (
-          <pre className="h-full overflow-auto p-4 text-xs leading-5 text-foreground whitespace-pre-wrap">{state.content}</pre>
+            <TooltipContent>{isRemoteWorkspace ? "Download artifact" : "Open externally"}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={(
+                <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close artifact">
+                  <X />
+                </Button>
+              )}
+            />
+            <TooltipContent>Close artifact</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {isLoading || (data?.kind === "binary" && !binaryObjectUrl) ? (
+          <PreviewLoading />
+        ) : isError ? (
+          <PreviewError message={error instanceof Error ? error.message : "Failed to load artifact" } />
+        ) : data?.kind === "text" && (editing || isDirectTextEdit) ? (
+          <TextEditor value={draft} language={target.preview === "markdown" ? "markdown" : "text"} onChange={setDraft} />
+        ) : target.preview === "markdown" && data?.kind === "text" ? (
+          <MarkdownPreview content={data.data} />
+        ) : target.preview === "sheet" ? (
+          <SheetEditor
+            name={target.name}
+            content={data ?? { kind: "binary", data: new ArrayBuffer(0) }}
+            saving={isSaving}
+            onSave={saveSpreadsheetContent}
+          />
+        ) : target.preview === "html" && data?.kind === "text" ? (
+          <HTMLPreview type="text" title={target.name} content={data.data} />
+        ) : target.preview === "image" && data?.kind === "binary" && binaryObjectUrl ? (
+          <ImagePreview src={binaryObjectUrl} alt={target.name} />
+        ) : data?.kind === "binary" && binaryObjectUrl && (target.preview === "pdf" || target.preview === "html") ? (
+          <HTMLPreview type="binary" title={target.name} url={binaryObjectUrl} />
+        ) : data?.kind === "text" ? (
+          <PlainText content={data.data} />
         ) : (
-          <div className="p-4 text-sm text-muted-foreground">Preview unavailable. Open externally to view this file.</div>
+          <PreviewUnavailable />
         )}
       </div>
     </div>
   );
 }
+
+interface TextEditorProps extends React.ComponentProps<typeof ArtifactTextEditor> {
+  value: string;
+  language: "markdown" | "text";
+  onChange: (value: string) => void;
+}
+
+function TextEditor({ value, language, onChange, ...props }: TextEditorProps) {
+  return (
+    <Suspense fallback={<PreviewLoading />}>
+      <ArtifactTextEditor value={value} language={language} onChange={onChange} {...props} />
+    </Suspense>
+  );
+}
+
+interface SheetEditorProps extends React.ComponentProps<typeof ArtifactSpreadsheetEditor> {
+  
+}
+
+function SheetEditor({ className, ...props }: SheetEditorProps) {
+  return (
+    <Suspense fallback={<PreviewLoading />}>
+      <ArtifactSpreadsheetEditor
+        className={className}
+        {...props}
+      />
+    </Suspense>
+  );
+}
+
