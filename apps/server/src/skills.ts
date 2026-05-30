@@ -121,17 +121,21 @@ export async function listSkills(workspaceRoot: string, includeGlobal: boolean):
   const items: SkillItem[] = [];
   for (const root of roots) {
     const opencodeDir = join(root, ".opencode", "skills");
+    const tronDir = join(root, ".tron", "skills");
     const claudeDir = join(root, ".claude", "skills");
     items.push(...(await listSkillsInDir(opencodeDir, "project")));
     items.push(...(await listSkillsInDir(claudeDir, "project")));
+    items.push(...(await listSkillsInDir(tronDir, "project")));
   }
 
   if (includeGlobal) {
     const globalOpenWork = join(homedir(), ".config", "opencode", "skills");
+    const globalTron = join(homedir(), ".config", "tron", "skills");
     const globalClaude = join(homedir(), ".claude", "skills");
     const globalAgents = join(homedir(), ".agents", "skills");
     const globalAgentLegacy = join(homedir(), ".agent", "skills");
     items.push(...(await listSkillsInDir(globalOpenWork, "global")));
+    items.push(...(await listSkillsInDir(globalTron, "global")));
     items.push(...(await listSkillsInDir(globalClaude, "global")));
     items.push(...(await listSkillsInDir(globalAgents, "global")));
     items.push(...(await listSkillsInDir(globalAgentLegacy, "global")));

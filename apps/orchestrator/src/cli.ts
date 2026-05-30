@@ -144,7 +144,7 @@ const SANDBOX_INTERNAL_OPENWORK_PORT = DEFAULT_OPENWORK_PORT;
 // mode we keep the *internal* port stable and only vary the published host
 // port to avoid collisions.
 const SANDBOX_INTERNAL_OPENCODE_ROUTER_HEALTH_PORT = 3005;
-const OPENWORK_DEV_DATA_DIR = "openwork-dev-data";
+const OPENWORK_DEV_DATA_DIR = "wudong-dev-data";
 
 const SANDBOX_OPENCODE_GLOBAL_CONFIG_CONTAINER_PATH =
   "/persist/.config/opencode";
@@ -664,7 +664,7 @@ async function resolveHostOpencodeGlobalConfigDir(): Promise<string | null> {
     );
   }
 
-  const files = ["opencode.jsonc", "opencode.json", "config.json", "AGENTS.md"];
+  const files = ["tron.jsonc", "tron.json", "config.json", "AGENTS.md"];
   for (const candidate of Array.from(
     new Set(candidates.map((item) => resolve(expandTildePath(item)))),
   )) {
@@ -1106,14 +1106,14 @@ async function ensureWorkspace(workspace: string): Promise<string> {
   const resolved = resolve(workspace);
   await mkdir(resolved, { recursive: true });
 
-  const configPathJsonc = join(resolved, "opencode.jsonc");
-  const configPathJson = join(resolved, "opencode.json");
+  const configPathJsonc = join(resolved, "wudong.jsonc");
+  const configPathJson = join(resolved, "wudong.json");
   const hasJsonc = await fileExists(configPathJsonc);
   const hasJson = await fileExists(configPathJson);
 
   if (!hasJsonc && !hasJson) {
     const payload = JSON.stringify(
-      { $schema: "https://opencode.ai/config.json" },
+      { $schema: "https://troncode.cn/config.json" },
       null,
       2,
     );
@@ -2846,11 +2846,11 @@ function resolveRouterDataDir(flags: Map<string, string | boolean>): string {
   if (override && override.trim()) {
     return resolve(override.trim());
   }
-  return join(homedir(), ".openwork", "openwork-orchestrator");
+  return join(homedir(), ".wudong", "openwork-orchestrator");
 }
 
 function resolveWorkspaceOpenworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "openwork.json");
+  return join(workspaceRoot, ".tron", "wudong.json");
 }
 
 function resolveOpencodeRouterConfigPath(): string {
@@ -2858,9 +2858,9 @@ function resolveOpencodeRouterConfigPath(): string {
   if (override) return resolve(override.replace(/^~\//, `${homedir()}/`));
   const dataDir =
     process.env.OPENCODE_ROUTER_DATA_DIR?.trim() ||
-    join(homedir(), ".openwork", "opencode-router");
+    join(homedir(), ".wudong", "tron-router");
   const expanded = dataDir.replace(/^~\//, `${homedir()}/`);
-  return join(resolve(expanded), "opencode-router.json");
+  return join(resolve(expanded), "tron-router.json");
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -4321,7 +4321,7 @@ async function writeSandboxEntrypoint(options: {
     ? `export OPENCODE_ROUTER_HEALTH_PORT=${shQuote(String(SANDBOX_INTERNAL_OPENCODE_ROUTER_HEALTH_PORT))}`
     : "";
   const openworkDevMode = (process.env.OPENWORK_DEV_MODE ?? "").trim() === "1";
-  const sandboxHomeDir = openworkDevMode ? "/persist/openwork-dev-data/home" : "/persist";
+  const sandboxHomeDir = openworkDevMode ? "/persist/wudong-dev-data/home" : "/persist";
 
   const script = [
     "set -eu",

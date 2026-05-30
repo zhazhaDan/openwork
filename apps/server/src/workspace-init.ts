@@ -54,7 +54,7 @@ Browser tools (\`browser_navigate\`, \`browser_snapshot\`, \`browser_click\`, \`
 ## Memory
 
 Two kinds:
-1. Behavior memory (shareable, in git): \`.opencode/skills/**\`, \`.opencode/agents/**\`, repo docs
+1. Behavior memory (shareable, in git): \`.tron/skills/**\`, \`.tron/agents/**\`, repo docs
 2. Private memory (never commit): tokens, credentials, local config, logs
 
 Hard rule: never copy private memory into repo files. Store only redacted summaries, schemas, and stable pointers.
@@ -112,7 +112,7 @@ async function ensureWorkspaceOpenworkConfig(workspaceRoot: string, preset: stri
     authorizedRoots: [workspaceRoot],
     reload: null,
   };
-  await ensureDir(join(workspaceRoot, ".opencode"));
+  await ensureDir(join(workspaceRoot, ".tron"));
   await writeFile(path, JSON.stringify(config, null, 2) + "\n", "utf8");
   return true;
 }
@@ -125,8 +125,8 @@ async function ensureOpencodeConfig(workspaceRoot: string): Promise<boolean> {
   }
 
   await writeJsoncFile(path, {
-    $schema: "https://opencode.ai/config.json",
-    default_agent: "openwork",
+    $schema: "https://troncode.cn/config.json",
+    default_agent: "wudong",
     plugin: [BROWSER_PLUGIN],
   });
   return true;
@@ -138,7 +138,7 @@ function resolveAgentTemplate(): string {
 }
 
 async function ensureOpenworkAgent(workspaceRoot: string): Promise<boolean> {
-  const agentsDir = join(workspaceRoot, ".opencode", "agents");
+  const agentsDir = join(workspaceRoot, ".tron", "agents");
   const agentPath = join(agentsDir, "openwork.md");
   const agentContent = resolveAgentTemplate();
   await ensureDir(agentsDir);
@@ -194,7 +194,7 @@ async function ensureBrowserPlugin(workspaceRoot: string): Promise<boolean> {
   const mcp = typeof config.mcp === "object" && config.mcp !== null ? config.mcp as Record<string, unknown> : null;
   const hasLegacyMcps = mcp ? LEGACY_BROWSER_MCP_KEYS.some((key) => key in mcp) : false;
   const shouldClaimDesktopCreatedConfig = await exists(openworkConfigPath(workspaceRoot)) && isSchemaOnlyOpencodeConfig(config);
-  const isOpenWorkOwned = config.default_agent === "openwork" || shouldClaimDesktopCreatedConfig;
+  const isOpenWorkOwned = config.default_agent === "wudong" || shouldClaimDesktopCreatedConfig;
 
   if (hasPlugin && !hasLegacyMcps) return false;
 
@@ -207,7 +207,7 @@ async function ensureBrowserPlugin(workspaceRoot: string): Promise<boolean> {
   }
 
   if (shouldClaimDesktopCreatedConfig) {
-    updates.default_agent = "openwork";
+    updates.default_agent = "wudong";
   }
 
   if (!Object.keys(updates).length && !hasLegacyMcps) return false;

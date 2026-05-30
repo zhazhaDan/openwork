@@ -989,8 +989,8 @@ function buildCapabilities(config: ServerConfig): Capabilities {
       files: {
         injection: writeEnabled && inboxEnabled,
         outbox: outboxEnabled,
-        inboxPath: ".opencode/openwork/inbox/",
-        outboxPath: ".opencode/openwork/outbox/",
+        inboxPath: ".tron/wudong/inbox/",
+        outboxPath: ".tron/wudong/outbox/",
         maxBytes,
       },
     },
@@ -1062,11 +1062,11 @@ function resolveBrowserProvider(): Capabilities["toolProviders"]["browser"] {
 }
 
 function resolveInboxDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "openwork", "inbox");
+  return join(workspaceRoot, ".tron", "wudong", "inbox");
 }
 
 function resolveOutboxDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "openwork", "outbox");
+  return join(workspaceRoot, ".tron", "wudong", "outbox");
 }
 
 export function normalizeWorkspaceRelativePath(input: string, options: { allowSubdirs: boolean }): string {
@@ -1516,7 +1516,7 @@ function buildConfigTrigger(path: string): ReloadTrigger {
   const name = path.split(/[\\/]/).filter(Boolean).pop();
   return {
     type: "config",
-    name: name || "opencode.json",
+    name: name || "wudong.json",
     action: "updated",
     path,
   };
@@ -2655,7 +2655,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "config.patch",
-      target: "opencode.json",
+      target: "wudong.json",
       summary: "Patched workspace config",
       timestamp: Date.now(),
     });
@@ -3406,7 +3406,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.add",
-      target: "opencode.json",
+      target: "wudong.json",
       summary: `Added ${spec}`,
       timestamp: Date.now(),
     });
@@ -3439,7 +3439,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.remove",
-      target: "opencode.json",
+      target: "wudong.json",
       summary: `Removed ${name}`,
       timestamp: Date.now(),
     });
@@ -3496,7 +3496,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "skills.install_hub",
       summary: `Install hub skill ${name}`,
-      paths: [join(workspace.path, ".opencode", "skills", name)],
+      paths: [join(workspace.path, ".tron", "skills", name)],
     });
 
     const result = await installHubSkill(workspace.path, { name, overwrite, repo });
@@ -3547,7 +3547,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "skills.upsert",
       summary: `Upsert skill ${name}`,
-      paths: [join(workspace.path, ".opencode", "skills", name, "SKILL.md")],
+      paths: [join(workspace.path, ".tron", "skills", name, "SKILL.md")],
     });
     const result = await upsertSkill(workspace.path, { name, content, description });
     await recordAudit(workspace.path, {
@@ -3580,7 +3580,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "skills.delete",
       summary: `Delete skill ${name}`,
-      paths: [join(workspace.path, ".opencode", "skills", name)],
+      paths: [join(workspace.path, ".tron", "skills", name)],
     });
     const result = await deleteSkill(workspace.path, name);
     await recordAudit(workspace.path, {
@@ -3629,7 +3629,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.add",
-      target: "opencode.json",
+      target: "wudong.json",
       summary: `Added MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3659,7 +3659,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.remove",
-      target: "opencode.json",
+      target: "wudong.json",
       summary: `Removed MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3703,7 +3703,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action,
-      target: "opencode.json",
+      target: "wudong.json",
       summary: `${enabled ? "Enabled" : "Disabled"} MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3793,7 +3793,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "commands.upsert",
       summary: `Upsert command ${name}`,
-      paths: [join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`)],
+      paths: [join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`)],
     });
     const path = await upsertCommand(workspace.path, {
       name,
@@ -3832,7 +3832,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "commands.delete",
       summary: `Delete command ${name}`,
-      paths: [join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`)],
+      paths: [join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`)],
     });
     await deleteCommand(workspace.path, name);
     await recordAudit(workspace.path, {
@@ -3840,7 +3840,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "commands.delete",
-      target: join(workspace.path, ".opencode", "commands"),
+      target: join(workspace.path, ".tron", "commands"),
       summary: `Deleted command ${name}`,
       timestamp: Date.now(),
     });
@@ -3849,7 +3849,7 @@ function createRoutes(
       type: "command",
       name: sanitizeCommandName(name),
       action: "removed",
-      path: join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`),
+      path: join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`),
     });
     return jsonResponse({ ok: true });
   });
@@ -4303,9 +4303,9 @@ function normalizeOpencodeScope(value: string | null | undefined): "project" | "
 
 function resolveOpencodeConfigFilePath(scope: "project" | "global", workspaceRoot: string): string {
   if (scope === "global") {
-    const base = join(homedir(), ".config", "opencode");
-    const jsoncPath = join(base, "opencode.jsonc");
-    const jsonPath = join(base, "opencode.json");
+    const base = join(homedir(), ".config", "tron");
+    const jsoncPath = join(base, "tron.jsonc");
+    const jsonPath = join(base, "tron.json");
     if (existsSync(jsoncPath)) return jsoncPath;
     if (existsSync(jsonPath)) return jsonPath;
     return jsoncPath;
@@ -4424,7 +4424,7 @@ async function reloadOpencodeEngine(config: ServerConfig, workspace: WorkspaceIn
 async function writeOpenworkConfig(workspaceRoot: string, payload: Record<string, unknown>, merge: boolean): Promise<void> {
   const path = openworkConfigPath(workspaceRoot);
   const next = merge ? { ...(await readOpenworkConfig(workspaceRoot)), ...payload } : payload;
-  await ensureDir(join(workspaceRoot, ".opencode"));
+  await ensureDir(join(workspaceRoot, ".tron"));
   await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
 }
 

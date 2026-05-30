@@ -2,10 +2,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export function opencodeConfigPath(workspaceRoot: string): string {
-  const jsoncPath = join(workspaceRoot, "opencode.jsonc");
-  const jsonPath = join(workspaceRoot, "opencode.json");
-  const hiddenJsoncPath = join(workspaceRoot, ".opencode", "opencode.jsonc");
-  const hiddenJsonPath = join(workspaceRoot, ".opencode", "opencode.json");
+  const jsoncPath = join(workspaceRoot, "wudong.jsonc");
+  const jsonPath = join(workspaceRoot, "wudong.json");
+  const hiddenJsoncPath = join(workspaceRoot, ".tron", "wudong.jsonc");
+  const hiddenJsonPath = join(workspaceRoot, ".tron", "wudong.json");
   if (existsSync(jsoncPath)) return jsoncPath;
   if (existsSync(jsonPath)) return jsonPath;
   if (existsSync(hiddenJsoncPath)) return hiddenJsoncPath;
@@ -14,17 +14,17 @@ export function opencodeConfigPath(workspaceRoot: string): string {
 }
 
 export function openworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "openwork.json");
+  return join(workspaceRoot, ".tron", "wudong.json");
 }
 
 export function projectSkillsDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "skills");
+  return join(workspaceRoot, ".tron", "skills");
 }
 
 export function projectCommandsDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "commands");
+  return join(workspaceRoot, ".tron", "commands");
 }
 
 export function projectPluginsDir(workspaceRoot: string): string {
-  return join(workspaceRoot, ".opencode", "plugins");
+  return join(workspaceRoot, ".tron", "plugins");
 }

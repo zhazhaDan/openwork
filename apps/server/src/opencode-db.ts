@@ -13,7 +13,7 @@ type SeedMessage = {
 const DEFAULT_AGENT = "openwork";
 const DEFAULT_PROVIDER = "openai";
 const DEFAULT_MODEL = "gpt-5.4";
-const OPENWORK_DEV_DATA_DIRS = ["openwork-dev-data", "opencode-dev"];
+const OPENWORK_DEV_DATA_DIRS = ["wudong-dev-data", "wudong-dev"];
 
 function truthy(value: string | undefined): boolean {
   if (!value) return false;
@@ -32,12 +32,12 @@ function opencodeOrchestratorDataDirs(): string[] {
 
   for (const name of OPENWORK_DEV_DATA_DIRS) {
     const base = join(root, name);
-    pushIfExists(join(base, "xdg", "data", "opencode"));
+    pushIfExists(join(base, "xdg", "data", "tron"));
     if (!existsSync(base)) continue;
 
     for (const entry of readdirSync(base, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      pushIfExists(join(base, entry.name, "xdg", "data", "opencode"));
+      pushIfExists(join(base, entry.name, "xdg", "data", "tron"));
     }
   }
 
@@ -48,12 +48,12 @@ function opencodeDataDirs(): string[] {
   const dirs: string[] = [];
   dirs.push(...opencodeOrchestratorDataDirs());
   const xdg = process.env.XDG_DATA_HOME?.trim();
-  if (xdg) dirs.push(join(xdg, "opencode"));
-  dirs.push(join(homedir(), ".local", "share", "opencode"));
-  if (process.platform === "darwin") dirs.push(join(homedir(), "Library", "Application Support", "opencode"));
+  if (xdg) dirs.push(join(xdg, "tron"));
+  dirs.push(join(homedir(), ".local", "share", "tron"));
+  if (process.platform === "darwin") dirs.push(join(homedir(), "Library", "Application Support", "tron"));
   if (process.platform === "win32") {
     const appData = process.env.APPDATA?.trim();
-    if (appData) dirs.push(join(appData, "opencode"));
+    if (appData) dirs.push(join(appData, "tron"));
   }
   return Array.from(new Set(dirs));
 }
@@ -61,8 +61,8 @@ function opencodeDataDirs(): string[] {
 function preferredDbNames(): string[] {
   const channel = process.env.OPENCODE_CHANNEL?.trim() || "local";
   return channel === "latest" || channel === "beta" || truthy(process.env.OPENCODE_DISABLE_CHANNEL_DB)
-    ? ["opencode.db"]
-    : [`opencode-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`, "opencode.db"];
+    ? ["tron.db"]
+    : [`tron-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`, "tron.db"];
 }
 
 function candidateOpencodeDbPaths(): string[] {
@@ -73,7 +73,7 @@ function candidateOpencodeDbPaths(): string[] {
     for (const dir of opencodeDataDirs()) {
       candidates.push(join(dir, override));
     }
-    candidates.push(join(opencodeDataDirs()[0] ?? join(homedir(), ".local", "share", "opencode"), override));
+    candidates.push(join(opencodeDataDirs()[0] ?? join(homedir(), ".local", "share", "tron"), override));
     return Array.from(new Set(candidates));
   }
 
@@ -91,7 +91,7 @@ export function resolveOpencodeDbPath(): string {
   const candidates = candidateOpencodeDbPaths();
   const existing = candidates.find((candidate) => existsSync(candidate));
   if (existing) return existing;
-  return candidates[0] ?? join(homedir(), ".local", "share", "opencode", preferredDbNames()[0] ?? "opencode.db");
+  return candidates[0] ?? join(homedir(), ".local", "share", "tron", preferredDbNames()[0] ?? "tron.db");
 }
 
 function findOpencodeSessionDbPath(sessionId: string, inputPath?: string): string | null {

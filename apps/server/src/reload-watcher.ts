@@ -78,7 +78,7 @@ function startWorkspaceReloadWatcher(input: {
 }): WorkspaceReloadWatcher {
   const { workspace, reloadEvents, logger, debounceMs } = input;
   const root = resolve(workspace.path);
-  const opencodeRoot = join(root, ".opencode");
+  const opencodeRoot = join(root, ".tron");
 
   const trees: DirectoryTreeWatcher[] = [];
   const baselines = new Map<ReloadReason, string>();
@@ -153,10 +153,10 @@ function startWorkspaceReloadWatcher(input: {
           const raw = filename ? filename.toString() : "";
           const name = raw.trim();
           if (!name) {
-            const inferredConfigPath = existsSync(join(opencodeRoot, "opencode.jsonc"))
-              ? join(opencodeRoot, "opencode.jsonc")
-              : existsSync(join(opencodeRoot, "opencode.json"))
-                ? join(opencodeRoot, "opencode.json")
+            const inferredConfigPath = existsSync(join(opencodeRoot, "wudong.jsonc"))
+              ? join(opencodeRoot, "wudong.jsonc")
+              : existsSync(join(opencodeRoot, "wudong.json"))
+                ? join(opencodeRoot, "wudong.json")
                 : null;
             scheduleReasonCheck("config", inferredConfigPath
               ? { type: "config", name: basename(inferredConfigPath), action: "updated", path: inferredConfigPath }
@@ -165,7 +165,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "opencode.json" || name === "opencode.jsonc") {
+          if (name === "wudong.json" || name === "wudong.jsonc") {
             scheduleReasonCheck("config", {
               type: "config",
               name,
@@ -212,7 +212,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "opencode.json" || name === "opencode.jsonc") {
+          if (name === "wudong.json" || name === "wudong.jsonc") {
             scheduleReasonCheck("config", {
               type: "config",
               name,
@@ -232,7 +232,7 @@ function startWorkspaceReloadWatcher(input: {
           }
 
           // If .opencode is created/removed, rescan the relevant trees.
-          if (name === ".opencode") {
+          if (name === ".tron") {
             ensureOpencodeRootWatcher();
             scheduleReasonCheck("config");
             for (const tree of trees) tree.scheduleRescan();

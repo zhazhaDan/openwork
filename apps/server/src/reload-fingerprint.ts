@@ -72,23 +72,23 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
   const files = new Set<string>();
 
   if (reason === "config" || reason === "mcp") {
-    await addIfExists(files, join(root, "opencode.jsonc"));
-    await addIfExists(files, join(root, "opencode.json"));
-    await addIfExists(files, join(root, ".opencode", "opencode.jsonc"));
-    await addIfExists(files, join(root, ".opencode", "opencode.json"));
+    await addIfExists(files, join(root, "wudong.jsonc"));
+    await addIfExists(files, join(root, "wudong.json"));
+    await addIfExists(files, join(root, ".wudong", "wudong.jsonc"));
+    await addIfExists(files, join(root, ".wudong", "wudong.json"));
   }
 
   if (reason === "agents") {
     await addIfExists(files, join(root, "AGENTS.md"));
     const isAgentFile = (absPath: string) => /\.(md|json|jsonc)$/i.test(basename(absPath));
-    await collectTreeFiles(files, join(root, ".opencode", "agents"), isAgentFile);
-    await collectTreeFiles(files, join(root, ".opencode", "agent"), isAgentFile);
+    await collectTreeFiles(files, join(root, ".tron", "agents"), isAgentFile);
+    await collectTreeFiles(files, join(root, ".tron", "agent"), isAgentFile);
   }
 
   if (reason === "skills") {
     await collectTreeFiles(
       files,
-      join(root, ".opencode", "skills"),
+      join(root, ".tron", "skills"),
       (absPath) => /^SKILL\.md$/i.test(basename(absPath)),
     );
   }
@@ -96,13 +96,13 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
   if (reason === "commands") {
     await collectTreeFiles(
       files,
-      join(root, ".opencode", "commands"),
+      join(root, ".tron", "commands"),
       (absPath) => /\.md$/i.test(basename(absPath)),
     );
   }
 
   if (reason === "plugins") {
-    await collectTreeFiles(files, join(root, ".opencode", "plugins"), () => true);
+    await collectTreeFiles(files, join(root, ".tron", "plugins"), () => true);
   }
 
   return Array.from(files).sort((a, b) => a.localeCompare(b));

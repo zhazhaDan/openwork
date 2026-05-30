@@ -13,7 +13,7 @@ export type PlannedPortableFile = PortableFile & {
   absolutePath: string;
 };
 
-const ALLOWED_PORTABLE_PREFIXES = [".opencode/agents/", ".opencode/plugins/", ".opencode/tools/"];
+const ALLOWED_PORTABLE_PREFIXES = [".tron/agents/", ".tron/plugins/", ".tron/tools/"];
 
 const RESERVED_PORTABLE_SEGMENTS = new Set([".DS_Store", "Thumbs.db", "node_modules"]);
 
@@ -133,7 +133,7 @@ async function walkPortableFilePaths(root: string, currentPath: string, output: 
 
 export async function listPortableFiles(workspaceRoot: string): Promise<PortableFile[]> {
   const root = resolve(workspaceRoot);
-  const portableRoot = join(root, ".opencode");
+  const portableRoot = join(root, ".tron");
   if (!(await exists(portableRoot))) return [];
 
   const output: PortableFile[] = [];
@@ -144,7 +144,7 @@ export async function listPortableFiles(workspaceRoot: string): Promise<Portable
 
 export async function listPortableFilePaths(workspaceRoot: string): Promise<string[]> {
   const root = resolve(workspaceRoot);
-  const portableRoot = join(root, ".opencode");
+  const portableRoot = join(root, ".tron");
   if (!(await exists(portableRoot))) return [];
 
   const output: string[] = [];

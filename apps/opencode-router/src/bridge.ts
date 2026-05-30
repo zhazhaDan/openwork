@@ -151,7 +151,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
 };
 
 const TYPING_INTERVAL_MS = 6000;
-const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".opencode/agents/opencode-router.md";
+const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".tron/agents/tron-router.md";
 const OPENCODE_ROUTER_AGENT_MAX_CHARS = 16_000;
 const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
   "Respond for non-technical users first.",
@@ -2154,7 +2154,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     peerKey: string;
     directory: string;
   }): Promise<string> {
-    const title = `opencode-router ${input.channel}/${input.identityId} ${input.peerId}`;
+    const title = `${input.channel}/${input.identityId} ${input.peerId}`;
     const session = await getClient(input.directory).session.create({
       title,
       permission: buildPermissionRules(config.permissionMode),
