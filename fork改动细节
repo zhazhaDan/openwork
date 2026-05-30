@@ -1,0 +1,47 @@
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/opencode-router/src/bridge.ts
+
+const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".opencode/agents/opencode-router.md";
+
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/orchestrator/src/cli.ts
+const OPENWORK_DEV_DATA_DIR = "openwork-dev-data";
+  return join(workspaceRoot, ".opencode", "openwork.json");
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/skills.ts
+      const opencodeDir = join(root, ".opencode", "skills");
+
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/server.ts
+  return join(workspaceRoot, ".opencode", "openwork", "inbox");
+  return join(workspaceRoot, ".opencode", "openwork", "outbox");
+        target: "opencode.json",
+              paths: [join(workspace.path, ".opencode", "skills", name)],
+                    paths: [join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`)],
+
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/reload-watcher.ts
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/portable-files.ts
+  const portableRoot = join(root, ".opencode");
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/opencode-db.ts
+const OPENWORK_DEV_DATA_DIRS = ["openwork-dev-data", "opencode-dev"];
+
+
+
+/Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/mcp.ts
+  const base = join(homedir(), ".config", "opencode");
+
+
+  /Users/mac/Desktop/yantronic/code/wudong-work/openWork-fork/apps/server/src/audit.ts
+    return join(workspaceRoot, ".opencode", "openwork", "audit.jsonl");
+
+OPENWORK_DEV_MODE
+OPENCODE_ROUTER_CONFIG_PATH
+OPENCODE_ROUTER_DATA_DIR
+OPENWORK_DATA_DIR
+OPENCODE_DB
