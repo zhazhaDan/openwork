@@ -139,7 +139,7 @@ function resolveAgentTemplate(): string {
 
 async function ensureOpenworkAgent(workspaceRoot: string): Promise<boolean> {
   const agentsDir = join(workspaceRoot, ".tron", "agents");
-  const agentPath = join(agentsDir, "openwork.md");
+  const agentPath = join(agentsDir, "wudongWork.md");
   const agentContent = resolveAgentTemplate();
   await ensureDir(agentsDir);
   if (!(await exists(agentPath))) {

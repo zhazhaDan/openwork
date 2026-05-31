@@ -14,7 +14,7 @@ export function opencodeConfigPath(workspaceRoot: string): string {
 }
 
 export function openworkConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".tron", "wudong.json");
+  return join(workspaceRoot, ".tron", "wudongwork.json");
 }
 
 export function projectSkillsDir(workspaceRoot: string): string {
