@@ -4304,8 +4304,8 @@ function normalizeOpencodeScope(value: string | null | undefined): "project" | "
 function resolveOpencodeConfigFilePath(scope: "project" | "global", workspaceRoot: string): string {
   if (scope === "global") {
     const base = join(homedir(), ".config", "tron");
-    const jsoncPath = join(base, "tron.jsonc");
-    const jsonPath = join(base, "tron.json");
+    const jsoncPath = join(base, "wudong.jsonc");
+    const jsonPath = join(base, "wudong.json");
     if (existsSync(jsoncPath)) return jsoncPath;
     if (existsSync(jsonPath)) return jsonPath;
     return jsoncPath;

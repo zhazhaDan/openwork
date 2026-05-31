@@ -656,11 +656,11 @@ async function resolveHostOpencodeGlobalConfigDir(): Promise<string | null> {
 
   const candidates: string[] = [];
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  if (xdg) candidates.push(join(xdg, "opencode"));
-  candidates.push(join(homedir(), ".config", "opencode"));
+  if (xdg) candidates.push(join(xdg, "tron"));
+  candidates.push(join(homedir(), ".config", "tron"));
   if (process.platform === "darwin") {
     candidates.push(
-      join(homedir(), "Library", "Application Support", "opencode"),
+      join(homedir(), "Library", "Application Support", "tron"),
     );
   }
 
@@ -1106,18 +1106,25 @@ async function ensureWorkspace(workspace: string): Promise<string> {
   const resolved = resolve(workspace);
   await mkdir(resolved, { recursive: true });
 
-  const configPathJsonc = join(resolved, "wudong.jsonc");
-  const configPathJson = join(resolved, "wudong.json");
-  const hasJsonc = await fileExists(configPathJsonc);
-  const hasJson = await fileExists(configPathJson);
+  // 检查 .tron/ 和根目录（向后兼容）是否已有配置
+  const tronDir = join(resolved, ".tron");
+  const tronDirJsonc = join(tronDir, "wudong.jsonc");
+  const tronDirJson = join(tronDir, "wudong.json");
+  const rootJsonc = join(resolved, "wudong.jsonc");
+  const rootJson = join(resolved, "wudong.json");
+  const hasConfig =
+    await fileExists(tronDirJsonc) ||
+    await fileExists(tronDirJson) ||
+    await fileExists(rootJsonc) ||
+    await fileExists(rootJson);
 
-  if (!hasJsonc && !hasJson) {
+  if (!hasConfig) {
     const payload = JSON.stringify(
       { $schema: "https://troncode.cn/config.json" },
       null,
       2,
     );
-    await writeFile(configPathJsonc, `${payload}\n`, "utf8");
+    await writeFile(tronDirJsonc, `${payload}\n`, "utf8");
   }
 
   return resolved;
