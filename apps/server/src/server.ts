@@ -1516,7 +1516,7 @@ function buildConfigTrigger(path: string): ReloadTrigger {
   const name = path.split(/[\\/]/).filter(Boolean).pop();
   return {
     type: "config",
-    name: name || "wudong.json",
+    name: name || "tron.json",
     action: "updated",
     path,
   };
@@ -2655,7 +2655,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "config.patch",
-      target: "wudong.json",
+      target: "tron.json",
       summary: "Patched workspace config",
       timestamp: Date.now(),
     });
@@ -3406,7 +3406,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.add",
-      target: "wudong.json",
+      target: "tron.json",
       summary: `Added ${spec}`,
       timestamp: Date.now(),
     });
@@ -3439,7 +3439,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "plugins.remove",
-      target: "wudong.json",
+      target: "tron.json",
       summary: `Removed ${name}`,
       timestamp: Date.now(),
     });
@@ -3629,7 +3629,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.add",
-      target: "wudong.json",
+      target: "tron.json",
       summary: `Added MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3659,7 +3659,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "mcp.remove",
-      target: "wudong.json",
+      target: "tron.json",
       summary: `Removed MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -3703,7 +3703,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action,
-      target: "wudong.json",
+      target: "tron.json",
       summary: `${enabled ? "Enabled" : "Disabled"} MCP ${name}`,
       timestamp: Date.now(),
     });
@@ -4304,8 +4304,8 @@ function normalizeOpencodeScope(value: string | null | undefined): "project" | "
 function resolveOpencodeConfigFilePath(scope: "project" | "global", workspaceRoot: string): string {
   if (scope === "global") {
     const base = join(homedir(), ".config", "tron");
-    const jsoncPath = join(base, "wudong.jsonc");
-    const jsonPath = join(base, "wudong.json");
+    const jsoncPath = join(base, "tron.jsonc");
+    const jsonPath = join(base, "tron.json");
     if (existsSync(jsoncPath)) return jsoncPath;
     if (existsSync(jsonPath)) return jsonPath;
     return jsoncPath;

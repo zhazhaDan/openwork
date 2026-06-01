@@ -290,12 +290,12 @@ function buildOpencodeDirectoryHeader(directory): string | null {
 
 ```
 workspace-root/
-├── wudong.jsonc          ← 首选（根目录，带注释的 JSON）
-├── wudong.json           ← 备选（根目录，纯 JSON）
+├── tron.jsonc          ← 首选（根目录，带注释的 JSON）
+├── tron.json           ← 备选（根目录，纯 JSON）
 └── .tron/
-    ├── wudong.jsonc      ← 首选（隐藏目录，Git 友好）
-    ├── wudong.json       ← 备选
-    ├── wudong.json     ← OpenWork 自身配置
+    ├── tron.jsonc      ← 首选（隐藏目录，Git 友好）
+    ├── tron.json       ← 备选
+    ├── tron.json     ← OpenWork 自身配置
     ├── skills/         ← Workspace 级 skills
     ├── commands/       ← Workspace 级命令模板
     └── plugins/        ← Workspace 级插件
@@ -308,8 +308,8 @@ export function opencodeConfigPath(workspaceRoot: string): string {
   // 优先级从高到低：
   1. .tron/wudong.jsonc    ← Git 友好，推荐
   2. .tron/wudong.json
-  3. wudong.jsonc          ← 根目录（向后兼容）
-  4. wudong.json
+  3. tron.jsonc          ← 根目录（向后兼容）
+  4. tron.json
   return hiddenJsoncPath;  // 默认返回 .tron/wudong.jsonc
 }
 ```
@@ -321,11 +321,11 @@ export function opencodeConfigPath(workspaceRoot: string): string {
 | 配置域 | API 端点 | 隔离级别 |
 |---|---|---|
 | **Provider** (model/api key) | `GET/POST /w/:id/opencode/config/providers` | ✅ Per-workspace |
-| **Plugin** | `GET/POST /w/:id/plugins` | ✅ Per-workspace (写 wudong.jsonc) |
-| **MCP Server** | `GET/POST /w/:id/mcp` | ✅ Per-workspace (写 wudong.jsonc) |
+| **Plugin** | `GET/POST /w/:id/plugins` | ✅ Per-workspace (写 tron.jsonc) |
+| **MCP Server** | `GET/POST /w/:id/mcp` | ✅ Per-workspace (写 tron.jsonc) |
 | **Skill** | `GET /w/:id/skills` | ✅ Per-workspace (.tron/skills/) |
 | **Command Template** | `GET/POST /w/:id/commands` | ✅ Per-workspace (.tron/commands/) |
-| **compaction.auto** | Settings UI toggle | ✅ Per-workspace (写 wudong.jsonc) |
+| **compaction.auto** | Settings UI toggle | ✅ Per-workspace (写 tron.jsonc) |
 | **baseUrl** | Server config / workspace config | ⚠️ Managed mode 下共享 |
 | **directory** | 自动 = workspace.path | ✅ Per-workspace |
 
@@ -447,7 +447,7 @@ async function reloadOpencodeEngine(config, workspace) {
 
   const response = await fetch(targetUrl, { method: "POST", headers: { Authorization } });
   // OpenCode dispose 该 directory 的内存实例
-  // 下次请求时会自动重新加载最新的 wudong.jsonc 配置
+  // 下次请求时会自动重新加载最新的 tron.jsonc 配置
 }
 ```
 
@@ -467,7 +467,7 @@ async function reloadOpencodeEngine(config, workspace) {
 
 | 操作 | 触发原因 | 是否 auto-reload |
 |---|---|---|
-| 修改 wudong.jsonc (provider/model) | `"config"` | ✅ |
+| 修改 tron.jsonc (provider/model) | `"config"` | ✅ |
 | 添加/删除 Plugin | `"plugins"` | ✅ |
 | 添加/删除 MCP Server | `"mcp"` | ✅ |
 | 安装/卸载 Skill | `"skills"` | ✅ |
@@ -507,7 +507,7 @@ async function reloadOpencodeEngine(config, workspace) {
    ├── 收到 x-opencode-directory header
    ├── 定位到 /path/to/workspace-A/.tron/tron.db (SQLite)
    ├── 读取该 workspace 的 session + messages
-   ├── 调用 LLM API (provider 来自 wudong.jsonc 配置)
+   ├── 调用 LLM API (provider 来自 tron.jsonc 配置)
    └── SSE 流式返回 token deltas
 
 4. OpenWork Server (反向)

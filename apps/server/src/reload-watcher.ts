@@ -153,10 +153,10 @@ function startWorkspaceReloadWatcher(input: {
           const raw = filename ? filename.toString() : "";
           const name = raw.trim();
           if (!name) {
-            const inferredConfigPath = existsSync(join(opencodeRoot, "wudong.jsonc"))
-              ? join(opencodeRoot, "wudong.jsonc")
-              : existsSync(join(opencodeRoot, "wudong.json"))
-                ? join(opencodeRoot, "wudong.json")
+            const inferredConfigPath = existsSync(join(opencodeRoot, "tron.jsonc"))
+              ? join(opencodeRoot, "tron.jsonc")
+              : existsSync(join(opencodeRoot, "tron.json"))
+                ? join(opencodeRoot, "tron.json")
                 : null;
             scheduleReasonCheck("config", inferredConfigPath
               ? { type: "config", name: basename(inferredConfigPath), action: "updated", path: inferredConfigPath }
@@ -165,7 +165,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "wudong.json" || name === "wudong.jsonc") {
+          if (name === "tron.json" || name === "tron.jsonc") {
             scheduleReasonCheck("config", {
               type: "config",
               name,
@@ -212,7 +212,7 @@ function startWorkspaceReloadWatcher(input: {
             return;
           }
 
-          if (name === "wudong.json" || name === "wudong.jsonc") {
+          if (name === "tron.json" || name === "tron.jsonc") {
             scheduleReasonCheck("config", {
               type: "config",
               name,

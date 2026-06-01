@@ -72,10 +72,10 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
   const files = new Set<string>();
 
   if (reason === "config" || reason === "mcp") {
-    await addIfExists(files, join(root, "wudong.jsonc"));
-    await addIfExists(files, join(root, "wudong.json"));
-    await addIfExists(files, join(root, ".wudong", "wudong.jsonc"));
-    await addIfExists(files, join(root, ".wudong", "wudong.json"));
+    await addIfExists(files, join(root, "tron.jsonc"));
+    await addIfExists(files, join(root, "tron.json"));
+    await addIfExists(files, join(root, ".wudong", "tron.jsonc"));
+    await addIfExists(files, join(root, ".wudong", "tron.json"));
   }
 
   if (reason === "agents") {
