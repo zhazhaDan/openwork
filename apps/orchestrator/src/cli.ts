@@ -118,6 +118,8 @@ type OpenCodeRouterHealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
+    feishu: boolean;
+    mattermost: boolean;
   };
   config: {
     groupsEnabled: boolean;
@@ -2922,6 +2924,34 @@ function hasConfiguredMessagingServices(routerConfig: Record<string, unknown>): 
     return true;
   }
 
+  const feishu = asRecord(channels.feishu);
+  const feishuApps = Array.isArray(feishu.apps) ? feishu.apps : [];
+  if (
+    feishuApps.some((app) => {
+      const record = asRecord(app);
+      return (
+        typeof record.appId === "string" && record.appId.trim().length > 0 &&
+        typeof record.appSecret === "string" && record.appSecret.trim().length > 0
+      );
+    })
+  ) {
+    return true;
+  }
+
+  const mattermost = asRecord(channels.mattermost);
+  const mattermostBots = Array.isArray(mattermost.bots) ? mattermost.bots : [];
+  if (
+    mattermostBots.some((bot) => {
+      const record = asRecord(bot);
+      return (
+        typeof record.serverUrl === "string" && record.serverUrl.trim().length > 0 &&
+        typeof record.accessToken === "string" && record.accessToken.trim().length > 0
+      );
+    })
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -3193,10 +3223,10 @@ function opencodeRouterSendToolSource(): string {
     "}",
     "",
     "export default tool({",
-    '  description: "Send a message via opencodeRouter (Telegram/Slack) to a peer or directory bindings.",',
+    '  description: "Send a message via opencodeRouter (Telegram/Slack/Feishu/Mattermost) to a peer or directory bindings.",',
     "  args: {",
     '    text: tool.schema.string().describe("Message text to send"),',
-    '    channel: tool.schema.enum(["telegram", "slack"]).optional().describe("Channel to send on (default: telegram)"),',
+    '    channel: tool.schema.enum(["telegram", "slack", "feishu", "mattermost"]).optional().describe("Channel to send on (default: telegram)"),',
     '    identityId: tool.schema.string().optional().describe("OpenCodeRouter identity id (default: all identities)"),',
     '    directory: tool.schema.string().optional().describe("Directory to target for fan-out (default: current session directory)"),',
     '    peerId: tool.schema.string().optional().describe("Direct destination peer id (chat/thread id)"),',
@@ -3209,8 +3239,8 @@ function opencodeRouterSendToolSource(): string {
     "      throw new Error(`Invalid OPENCODE_ROUTER_HEALTH_PORT: ${rawPort}`)",
     "    }",
     '    const channel = (args.channel || "telegram").trim()',
-    '    if (channel !== "telegram" && channel !== "slack") {',
-    '      throw new Error("channel must be telegram or slack")',
+    '    if (channel !== "telegram" && channel !== "slack" && channel !== "feishu" && channel !== "mattermost") {',
+    '      throw new Error("channel must be telegram, slack, feishu, or mattermost")',
     "    }",
     '    const text = String(args.text || "")',
     '    if (!text.trim()) throw new Error("text is required")',
@@ -3283,7 +3313,7 @@ function opencodeRouterStatusToolSource(): string {
     "export default tool({",
     '  description: "Check opencodeRouter messaging readiness (health, identities, bindings).",',
     "  args: {",
-    '    channel: tool.schema.enum(["telegram", "slack"]).optional().describe("Channel to inspect (default: telegram)"),',
+    '    channel: tool.schema.enum(["telegram", "slack", "feishu", "mattermost"]).optional().describe("Channel to inspect (default: telegram)"),',
     '    identityId: tool.schema.string().optional().describe("Identity id to scope checks"),',
     '    directory: tool.schema.string().optional().describe("Directory to inspect bindings for (default: current session directory)"),',
     '    peerId: tool.schema.string().optional().describe("Peer id to inspect bindings for"),',
@@ -3296,8 +3326,8 @@ function opencodeRouterStatusToolSource(): string {
     "      throw new Error(`Invalid OPENCODE_ROUTER_HEALTH_PORT: ${rawPort}`)",
     "    }",
     '    const channel = (args.channel || "telegram").trim()',
-    '    if (channel !== "telegram" && channel !== "slack") {',
-    '      throw new Error("channel must be telegram or slack")',
+    '    if (channel !== "telegram" && channel !== "slack" && channel !== "feishu" && channel !== "mattermost") {',
+    '      throw new Error("channel must be telegram, slack, feishu, or mattermost")',
     "    }",
     '    const identityId = String(args.identityId || "").trim()',
     '    const directory = (args.directory || context.directory || "").trim()',
@@ -6994,7 +7024,7 @@ async function runStart(args: ParsedArgs) {
   await ensureOpencodeManagedTools(opencodeConfigDir);
   const opencodeRouterDataDir =
     sandboxMode === "none"
-      ? join(dataDir, "opencode-router", workspaceIdForLocal(resolvedWorkspace))
+      ? join(dataDir, "tron-router", workspaceIdForLocal(resolvedWorkspace))
       : null;
   if (opencodeRouterDataDir) {
     await mkdir(opencodeRouterDataDir, { recursive: true });
