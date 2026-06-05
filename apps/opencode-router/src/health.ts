@@ -2,7 +2,26 @@ import http from "node:http";
 
 import type { Logger } from "pino";
 
+import type { ModelRef } from "./config.js";
 import type { OutboundMessagePart, PartDeliveryResult } from "./media.js";
+import { handleExtChannelRoute, type ExtHealthHandlers } from "./channels-ext.js";
+
+function normalizeDefaultModel(value: unknown): ModelRef | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const sep = trimmed.indexOf("/");
+    if (sep <= 0 || sep === trimmed.length - 1) return undefined;
+    return { providerID: trimmed.slice(0, sep), modelID: trimmed.slice(sep + 1) };
+  }
+  if (typeof value === "object") {
+    const m = value as { providerID?: unknown; modelID?: unknown };
+    if (typeof m.providerID === "string" && typeof m.modelID === "string" && m.providerID.trim() && m.modelID.trim()) {
+      return { providerID: m.providerID.trim(), modelID: m.modelID.trim() };
+    }
+  }
+  return undefined;
+}
 
 export type HealthSnapshot = {
   ok: boolean;
@@ -15,6 +34,8 @@ export type HealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
+    feishu: boolean;
+    mattermost: boolean;
   };
   config: {
     groupsEnabled: boolean;
@@ -45,12 +66,16 @@ export type TelegramIdentityItem = {
   running: boolean;
   access?: "public" | "private";
   pairingRequired?: boolean;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 export type SlackIdentityItem = {
   id: string;
   enabled: boolean;
   running: boolean;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 export type TelegramIdentitiesResult = {
@@ -86,6 +111,8 @@ export type TelegramIdentityUpsertInput = {
   directory?: string;
   access?: "public" | "private";
   pairingCodeHash?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 export type SlackIdentityUpsertInput = {
@@ -94,6 +121,8 @@ export type SlackIdentityUpsertInput = {
   appToken: string;
   enabled?: boolean;
   directory?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 export type BindingItem = {
@@ -136,7 +165,7 @@ export type SendMessageResult = {
   reason?: string;
 };
 
-export type HealthHandlers = {
+export type HealthHandlers = ExtHealthHandlers & {
   setGroupsEnabled?: (enabled: boolean) => Promise<GroupsConfigResult>;
   getGroupsEnabled?: () => boolean;
   listTelegramIdentities?: () => Promise<TelegramIdentitiesResult>;
@@ -197,6 +226,10 @@ export async function startHealthServer(
         res.end(JSON.stringify(snapshot));
         return;
       }
+
+      // Extension channel routes (Feishu, Mattermost, etc.)
+      const extHandled = await handleExtChannelRoute(pathname, req.method ?? "GET", req, res, handlers);
+      if (extHandled) return;
 
       // Legacy alias: POST /config/telegram-token -> upsert telegram identity "default".
       if (pathname === "/config/telegram-token" && req.method === "POST") {
@@ -322,6 +355,8 @@ export async function startHealthServer(
           const access = typeof payload.access === "string" ? payload.access.trim() : undefined;
           const pairingCodeHash = typeof payload.pairingCodeHash === "string" ? payload.pairingCodeHash.trim() : undefined;
           const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
+          const defaultAgent = typeof payload.defaultAgent === "string" ? payload.defaultAgent.trim() : undefined;
+          const defaultModel = normalizeDefaultModel(payload.defaultModel);
           if (!token) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error: "token is required" }));
@@ -334,6 +369,8 @@ export async function startHealthServer(
             ...(directory ? { directory } : {}),
             ...(access ? { access: access as "public" | "private" } : {}),
             ...(pairingCodeHash ? { pairingCodeHash } : {}),
+            ...(defaultAgent ? { defaultAgent } : {}),
+            ...(defaultModel ? { defaultModel } : {}),
           });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, telegram: result }));
@@ -414,6 +451,8 @@ export async function startHealthServer(
           const id = typeof payload.id === "string" ? payload.id.trim() : undefined;
           const directory = typeof payload.directory === "string" ? payload.directory.trim() : undefined;
           const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
+          const defaultAgent = typeof payload.defaultAgent === "string" ? payload.defaultAgent.trim() : undefined;
+          const defaultModel = normalizeDefaultModel(payload.defaultModel);
           if (!botToken || !appToken) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error: "botToken and appToken are required" }));
@@ -425,6 +464,8 @@ export async function startHealthServer(
             appToken,
             ...(enabled === undefined ? {} : { enabled }),
             ...(directory ? { directory } : {}),
+            ...(defaultAgent ? { defaultAgent } : {}),
+            ...(defaultModel ? { defaultModel } : {}),
           });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, slack: result }));

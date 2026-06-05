@@ -1,7 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Logger } from "pino";
@@ -19,6 +18,7 @@ import { isWithinWorkspaceRootPath, normalizeScopedDirectoryPath } from "./path-
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
+import { registerExtAdapters, createExtBridgeHandlers } from "./channels-ext.js";
 
 type Adapter = {
   key: string;
@@ -27,7 +27,7 @@ type Adapter = {
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[] }) => Promise<MessageDeliveryResult>;
+  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: { kind?: OutboundKind } }) => Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendFile?: (peerId: string, filePath: string, caption?: string) => Promise<void>;
   sendTyping?: (peerId: string) => Promise<void>;
@@ -148,26 +148,15 @@ const TOOL_LABELS: Record<string, string> = {
 const CHANNEL_LABELS: Record<ChannelName, string> = {
   telegram: "Telegram",
   slack: "Slack",
+  feishu: "Feishu",
+  mattermost: "Mattermost",
 };
 
 const TYPING_INTERVAL_MS = 6000;
-const OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH = ".tron/agents/tron-router.md";
-const OPENCODE_ROUTER_AGENT_MAX_CHARS = 16_000;
-const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
-  "Respond for non-technical users first.",
-  "Do not tell users to run router commands; use tools on their behalf.",
-  "Never expose raw peer IDs or Telegram chat IDs unless the user explicitly asks for debug details.",
-  "Do not ask end users for peer IDs or identity IDs.",
-  "For Telegram send requests, try delivery immediately using existing bindings or direct tool calls.",
-  "If Telegram returns 'chat not found', explain that the recipient must message the bot first (for example with /start), then ask the user to retry.",
-  "Keep status updates concise and action-oriented.",
-].join("\n");
 
-type MessagingAgentConfig = {
-  filePath: string;
-  loaded: boolean;
-  selectedAgent?: string;
-  instructions: string;
+type IdentityDefaults = {
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 // Model presets for quick switching
@@ -178,6 +167,8 @@ const MODEL_PRESETS: Record<string, ModelRef> = {
 
 // Per-user model overrides (channel:peerId -> ModelRef)
 const userModelOverrides = new Map<string, ModelRef>();
+// Per-user agent overrides
+const userAgentOverrides = new Map<string, string>();
 
 function getUserModelKey(channel: ChannelName, identityId: string, peerId: string): string {
   return `${channel}:${identityId}:${peerId}`;
@@ -194,6 +185,19 @@ function setUserModel(channel: ChannelName, identityId: string, peerId: string, 
     userModelOverrides.set(key, model);
   } else {
     userModelOverrides.delete(key);
+  }
+}
+
+function getUserAgent(channel: ChannelName, identityId: string, peerId: string): string | undefined {
+  return userAgentOverrides.get(getUserModelKey(channel, identityId, peerId));
+}
+
+function setUserAgent(channel: ChannelName, identityId: string, peerId: string, agent: string | undefined): void {
+  const key = getUserModelKey(channel, identityId, peerId);
+  if (agent) {
+    userAgentOverrides.set(key, agent);
+  } else {
+    userAgentOverrides.delete(key);
   }
 }
 
@@ -245,89 +249,53 @@ function normalizeIdentityId(value: string | undefined): string {
   return cleaned || "default";
 }
 
+function deriveIdentityIdForChannel(
+  channel: ChannelName,
+  input: Record<string, unknown>,
+): string {
+  const tail = (value: unknown, n: number) =>
+    typeof value === "string" ? value.trim().slice(-n) : "";
+  if (channel === "telegram") {
+    const t = tail(input.token, 6);
+    return t ? `tg-${t}` : "default";
+  }
+  if (channel === "slack") {
+    const t = tail(input.botToken, 6);
+    return t ? `sl-${t}` : "default";
+  }
+  if (channel === "feishu") {
+    const appId = typeof input.appId === "string" ? input.appId.trim() : "";
+    return appId || "default";
+  }
+  if (channel === "mattermost") {
+    const url = typeof input.serverUrl === "string" ? input.serverUrl.trim() : "";
+    try {
+      const host = new URL(url).host;
+      return host ? `mm-${host}` : "default";
+    } catch {
+      return "default";
+    }
+  }
+  return "default";
+}
+
+function resolveIdentityId(
+  channel: ChannelName,
+  input: { id?: unknown } & Record<string, unknown>,
+): string {
+  if (typeof input.id === "string" && input.id.trim()) {
+    return normalizeIdentityId(input.id);
+  }
+  return normalizeIdentityId(deriveIdentityIdForChannel(channel, input));
+}
+
 export async function startBridge(config: Config, logger: Logger, reporter?: BridgeReporter, deps: BridgeDeps = {}) {
   const reportStatus = reporter?.onStatus;
   const clients = new Map<string, ReturnType<typeof createClient>>();
   const defaultDirectory = config.opencodeDirectory;
   const workspaceRoot = resolve(defaultDirectory || process.cwd());
-  const mediaStore = new MediaStore(join(workspaceRoot, ".opencode-router", "media"));
+  const mediaStore = new MediaStore(join(workspaceRoot, ".tron-router", "media"));
   await mediaStore.ensureReady();
-  const workspaceAgentFilePath = join(workspaceRoot, OPENCODE_ROUTER_AGENT_FILE_RELATIVE_PATH);
-  const agentPromptCache = new Map<string, { mtimeMs: number; config: MessagingAgentConfig }>();
-  let latestAgentConfig: MessagingAgentConfig = {
-    filePath: workspaceAgentFilePath,
-    loaded: false,
-    instructions: "",
-  };
-
-  const parseMessagingAgentFile = (content: string): { selectedAgent?: string; instructions: string } => {
-    const lines = content.split(/\r?\n/);
-    let start = 0;
-    while (start < lines.length && !lines[start]?.trim()) {
-      start += 1;
-    }
-
-    let selectedAgent: string | undefined;
-    if (start < lines.length) {
-      const first = lines[start]?.trim() ?? "";
-      const match = first.match(/^@agent\s+([A-Za-z0-9_.:/-]+)$/);
-      if (match?.[1]) {
-        selectedAgent = match[1];
-        lines.splice(start, 1);
-      }
-    }
-
-    const instructions = lines.join("\n").trim();
-    return { ...(selectedAgent ? { selectedAgent } : {}), instructions };
-  };
-
-  const loadMessagingAgentConfig = async (): Promise<MessagingAgentConfig> => {
-    const filePath = workspaceAgentFilePath;
-    try {
-      const info = await stat(filePath);
-      if (!info.isFile()) {
-        agentPromptCache.delete(filePath);
-        latestAgentConfig = { filePath, loaded: false, instructions: "" };
-        return latestAgentConfig;
-      }
-
-      const cached = agentPromptCache.get(filePath);
-      if (cached && cached.mtimeMs === info.mtimeMs) {
-        latestAgentConfig = cached.config;
-        return latestAgentConfig;
-      }
-
-      const raw = (await readFile(filePath, "utf8")).trim();
-      if (!raw) {
-        const next: MessagingAgentConfig = { filePath, loaded: false, instructions: "" };
-        agentPromptCache.set(filePath, { mtimeMs: info.mtimeMs, config: next });
-        latestAgentConfig = next;
-        return next;
-      }
-
-      const truncated = raw.length > OPENCODE_ROUTER_AGENT_MAX_CHARS ? raw.slice(0, OPENCODE_ROUTER_AGENT_MAX_CHARS) : raw;
-      const parsed = parseMessagingAgentFile(truncated);
-      const next: MessagingAgentConfig = {
-        filePath,
-        loaded: Boolean(parsed.instructions || parsed.selectedAgent),
-        ...(parsed.selectedAgent ? { selectedAgent: parsed.selectedAgent } : {}),
-        instructions: parsed.instructions,
-      };
-      agentPromptCache.set(filePath, { mtimeMs: info.mtimeMs, config: next });
-      latestAgentConfig = next;
-      return next;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT") {
-        agentPromptCache.delete(filePath);
-        latestAgentConfig = { filePath, loaded: false, instructions: "" };
-        return latestAgentConfig;
-      }
-      logger.warn({ error, filePath }, "failed to load opencode-router agent file");
-      latestAgentConfig = { filePath, loaded: false, instructions: "" };
-      return latestAgentConfig;
-    }
-  };
 
   const isDangerousRootDirectory = (dir: string) => {
     const normalized = dir.trim();
@@ -346,8 +314,42 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const bot = config.telegramBots.find((entry) => entry.id === id);
       return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
     }
-    const app = config.slackApps.find((entry) => entry.id === id);
-    return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    if (channel === "slack") {
+      const app = config.slackApps.find((entry) => entry.id === id);
+      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    }
+    if (channel === "feishu") {
+      const app = config.feishuApps.find((entry) => entry.id === id);
+      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    }
+    if (channel === "mattermost") {
+      const bot = config.mattermostBots.find((entry) => entry.id === id);
+      return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
+    }
+    return "";
+  };
+
+  const resolveIdentityDefaults = (channel: ChannelName, identityId: string): IdentityDefaults | undefined => {
+    const id = identityId.trim();
+    if (!id) return undefined;
+    const list =
+      channel === "telegram"
+        ? config.telegramBots
+        : channel === "slack"
+          ? config.slackApps
+          : channel === "feishu"
+            ? config.feishuApps
+            : channel === "mattermost"
+              ? config.mattermostBots
+              : null;
+    if (!list) return undefined;
+    const entry = list.find((item) => item.id === id) as IdentityDefaults | undefined;
+    if (!entry) return undefined;
+    if (!entry.defaultAgent && !entry.defaultModel) return undefined;
+    return {
+      ...(entry.defaultAgent ? { defaultAgent: entry.defaultAgent } : {}),
+      ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
+    };
   };
 
   const resolveTelegramIdentityAccess = (
@@ -373,7 +375,16 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     if (channel === "telegram") {
       return config.telegramBots.map((bot) => ({ id: bot.id, directory: (bot.directory ?? "").trim() }));
     }
-    return config.slackApps.map((app) => ({ id: app.id, directory: (app.directory ?? "").trim() }));
+    if (channel === "slack") {
+      return config.slackApps.map((app) => ({ id: app.id, directory: (app.directory ?? "").trim() }));
+    }
+    if (channel === "feishu") {
+      return config.feishuApps.map((app) => ({ id: app.id, directory: (app.directory ?? "").trim() }));
+    }
+    if (channel === "mattermost") {
+      return config.mattermostBots.map((bot) => ({ id: bot.id, directory: (bot.directory ?? "").trim() }));
+    }
+    return [];
   };
 
   const getClient = (directory?: string | null) => {
@@ -432,6 +443,9 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const base = createSlackAdapter(app, config, logger, handleInbound, undefined, mediaStore);
       adapters.set(key, { ...base, key });
     }
+
+    // Extension adapters (Feishu, Mattermost, and future channels)
+    registerExtAdapters(config, adapters, logger, handleInbound, mediaStore);
   }
 
   const keyForSession = (directory: string, sessionID: string) => `${directory}::${sessionID}`;
@@ -448,12 +462,31 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
   const workspaceRootNormalized = normalizeDirectory(workspaceRoot);
 
+  const collectTrustedRoots = (): string[] => {
+    const roots = new Set<string>();
+    if (workspaceRoot) roots.add(workspaceRoot);
+    for (const list of [
+      config.telegramBots,
+      config.slackApps,
+      config.feishuApps,
+      config.mattermostBots,
+    ]) {
+      for (const item of list) {
+        const dir = typeof item.directory === "string" ? item.directory.trim() : "";
+        if (dir) roots.add(resolve(dir));
+      }
+    }
+    return Array.from(roots);
+  };
+
   const isWithinWorkspaceRoot = (candidate: string) => {
-    return isWithinWorkspaceRootPath({
-      workspaceRoot,
-      candidate,
-      platform: process.platform,
-    });
+    return collectTrustedRoots().some((root) =>
+      isWithinWorkspaceRootPath({
+        workspaceRoot: root,
+        candidate,
+        platform: process.platform,
+      }),
+    );
   };
 
   const resolveScopedDirectory = (input: string): { ok: true; directory: string } | { ok: false; error: string } => {
@@ -463,7 +496,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     if (!isWithinWorkspaceRoot(resolved)) {
       return {
         ok: false,
-        error: `Directory must stay within workspace root: ${workspaceRootNormalized}`,
+        error: "Directory is not within an allowed workspace root.",
       };
     }
     return { ok: true, directory: normalizeDirectory(resolved) };
@@ -539,7 +572,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       opencodeHealthy = Boolean((health as { healthy?: boolean }).healthy);
       opencodeVersion = (health as { version?: string }).version;
     } catch (error) {
-      logger.warn({ error }, "failed to reach opencode health");
+      logger.warn({ error }, "failed to reach tron health");
       opencodeHealthy = false;
     }
 
@@ -590,8 +623,6 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     outboundToday += 1;
     lastOutboundAt = now;
   };
-
-  await loadMessagingAgentConfig();
 
   const outboundMediaMaxBytesRaw = Number.parseInt(process.env.OPENCODE_ROUTER_MAX_MEDIA_BYTES ?? "", 10);
   const outboundMediaMaxBytes =
@@ -670,7 +701,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     if (adapter.sendMessage) {
       try {
-        return await adapter.sendMessage(peerId, { parts });
+        return await adapter.sendMessage(peerId, { parts, meta: { kind } });
       } catch (error) {
         const classified = classifyDeliveryError(error);
         return {
@@ -742,6 +773,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           // WhatsApp removed; keep field for backward compatibility.
           whatsapp: false,
           slack: Array.from(adapters.keys()).some((key) => key.startsWith("slack:")),
+          feishu: Array.from(adapters.keys()).some((key) => key.startsWith("feishu:")),
+          mattermost: Array.from(adapters.keys()).some((key) => key.startsWith("mattermost:")),
         },
         config: {
           groupsEnabled,
@@ -755,12 +788,6 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           ...(typeof lastInboundAt === "number" || typeof lastOutboundAt === "number"
             ? { lastMessageAt: Math.max(lastInboundAt ?? 0, lastOutboundAt ?? 0) }
             : {}),
-        },
-        agent: {
-          scope: "workspace",
-          path: latestAgentConfig.filePath,
-          loaded: latestAgentConfig.loaded,
-          ...(latestAgentConfig.selectedAgent ? { selected: latestAgentConfig.selectedAgent } : {}),
         },
       }),
       logger,
@@ -793,6 +820,9 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               running: adapters.has(adapterKey("telegram", bot.id)),
               access: normalizeTelegramAccess((bot as any).access),
               pairingRequired: normalizeTelegramAccess((bot as any).access) === "private",
+              ...(bot.directory ? { directory: bot.directory } : {}),
+              ...(bot.defaultAgent ? { defaultAgent: bot.defaultAgent } : {}),
+              ...(bot.defaultModel ? { defaultModel: bot.defaultModel } : {}),
             })),
           };
         },
@@ -803,16 +833,54 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           directory?: string;
           access?: "public" | "private";
           pairingCodeHash?: string;
+          defaultAgent?: string;
+          defaultModel?: ModelRef;
         }) => {
           const token = input.token?.trim() ?? "";
           if (!token) throw new Error("token is required");
-          const id = normalizeIdentityId(input.id);
+          const id = resolveIdentityId("telegram", { ...input, token });
           if (id === "env") throw new Error("identity id 'env' is reserved");
           const enabled = input.enabled !== false;
           const directoryInput = typeof input.directory === "string" ? input.directory.trim() : "";
           const requestedAccess =
             typeof input.access === "string" && input.access.trim() ? normalizeTelegramAccess(input.access) : undefined;
           const requestedPairingCodeHash = normalizePairingCodeHash(input.pairingCodeHash);
+          const requestedDefaultAgent =
+            typeof input.defaultAgent === "string" ? input.defaultAgent.trim() : undefined;
+          const requestedDefaultModel =
+            input.defaultModel && typeof input.defaultModel === "object" && input.defaultModel.providerID && input.defaultModel.modelID
+              ? { providerID: input.defaultModel.providerID, modelID: input.defaultModel.modelID }
+              : undefined;
+          const defaultsPatch: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+          if (requestedDefaultAgent !== undefined) {
+            if (requestedDefaultAgent) defaultsPatch.defaultAgent = requestedDefaultAgent;
+          }
+          if (requestedDefaultModel !== undefined) {
+            defaultsPatch.defaultModel = requestedDefaultModel;
+          }
+          const mergeDefaults = (existing: { defaultAgent?: unknown; defaultModel?: unknown }) => {
+            const out: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+            const agent =
+              requestedDefaultAgent === undefined
+                ? typeof existing.defaultAgent === "string" && existing.defaultAgent.trim()
+                  ? existing.defaultAgent.trim()
+                  : undefined
+                : requestedDefaultAgent || undefined;
+            if (agent) out.defaultAgent = agent;
+            const model =
+              requestedDefaultModel === undefined
+                ? existing.defaultModel && typeof existing.defaultModel === "object"
+                  ? (() => {
+                      const m = existing.defaultModel as { providerID?: unknown; modelID?: unknown };
+                      return typeof m.providerID === "string" && typeof m.modelID === "string" && m.providerID && m.modelID
+                        ? { providerID: m.providerID, modelID: m.modelID }
+                        : undefined;
+                    })()
+                  : undefined
+                : requestedDefaultModel;
+            if (model) out.defaultModel = model;
+            return out;
+          };
 
           // Persist to config file.
           const { config: current } = readConfigFile(config.configPath);
@@ -845,6 +913,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               ...(directory ? { directory } : {}),
               access,
               ...(access === "private" ? { pairingCodeHash } : {}),
+              ...mergeDefaults(record),
             });
           }
           if (!found) {
@@ -860,6 +929,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               ...(directoryInput ? { directory: directoryInput } : {}),
               access,
               ...(access === "private" ? { pairingCodeHash } : {}),
+              ...defaultsPatch,
             });
           }
 
@@ -899,6 +969,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               ...(nextDirectory ? { directory: String(nextDirectory).trim() } : {}),
               access: runtimeAccess,
               ...(runtimeAccess === "private" ? { pairingCodeHash: runtimePairingCodeHash } : {}),
+              ...mergeDefaults(prev as Record<string, unknown>),
             };
           } else {
             runtimeAccess = requestedAccess ?? "public";
@@ -913,6 +984,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               ...(directoryInput ? { directory: directoryInput } : {}),
               access: runtimeAccess,
               ...(runtimeAccess === "private" ? { pairingCodeHash: runtimePairingCodeHash } : {}),
+              ...defaultsPatch,
             });
           }
 
@@ -1058,17 +1130,52 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               id: app.id,
               enabled: app.enabled !== false,
               running: adapters.has(adapterKey("slack", app.id)),
+              ...(app.directory ? { directory: app.directory } : {}),
+              ...(app.defaultAgent ? { defaultAgent: app.defaultAgent } : {}),
+              ...(app.defaultModel ? { defaultModel: app.defaultModel } : {}),
             })),
           };
         },
-        upsertSlackIdentity: async (input: { id?: string; botToken: string; appToken: string; enabled?: boolean; directory?: string }) => {
+        upsertSlackIdentity: async (input: { id?: string; botToken: string; appToken: string; enabled?: boolean; directory?: string; defaultAgent?: string; defaultModel?: ModelRef }) => {
           const botToken = input.botToken?.trim() ?? "";
           const appToken = input.appToken?.trim() ?? "";
           if (!botToken || !appToken) throw new Error("botToken and appToken are required");
-          const id = normalizeIdentityId(input.id);
+          const id = resolveIdentityId("slack", { ...input, botToken, appToken });
           if (id === "env") throw new Error("identity id 'env' is reserved");
           const enabled = input.enabled !== false;
           const directoryInput = typeof input.directory === "string" ? input.directory.trim() : "";
+          const requestedDefaultAgent =
+            typeof input.defaultAgent === "string" ? input.defaultAgent.trim() : undefined;
+          const requestedDefaultModel =
+            input.defaultModel && typeof input.defaultModel === "object" && input.defaultModel.providerID && input.defaultModel.modelID
+              ? { providerID: input.defaultModel.providerID, modelID: input.defaultModel.modelID }
+              : undefined;
+          const defaultsPatch: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+          if (requestedDefaultAgent !== undefined && requestedDefaultAgent) defaultsPatch.defaultAgent = requestedDefaultAgent;
+          if (requestedDefaultModel !== undefined) defaultsPatch.defaultModel = requestedDefaultModel;
+          const mergeDefaults = (existing: { defaultAgent?: unknown; defaultModel?: unknown }) => {
+            const out: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+            const agent =
+              requestedDefaultAgent === undefined
+                ? typeof existing.defaultAgent === "string" && existing.defaultAgent.trim()
+                  ? existing.defaultAgent.trim()
+                  : undefined
+                : requestedDefaultAgent || undefined;
+            if (agent) out.defaultAgent = agent;
+            const model =
+              requestedDefaultModel === undefined
+                ? existing.defaultModel && typeof existing.defaultModel === "object"
+                  ? (() => {
+                      const m = existing.defaultModel as { providerID?: unknown; modelID?: unknown };
+                      return typeof m.providerID === "string" && typeof m.modelID === "string" && m.providerID && m.modelID
+                        ? { providerID: m.providerID, modelID: m.modelID }
+                        : undefined;
+                    })()
+                  : undefined
+                : requestedDefaultModel;
+            if (model) out.defaultModel = model;
+            return out;
+          };
 
           const { config: current } = readConfigFile(config.configPath);
           const slack = current.channels?.slack;
@@ -1086,10 +1193,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
             found = true;
             const existingDirectory = typeof record.directory === "string" ? record.directory.trim() : "";
             const directory = directoryInput || existingDirectory;
-            nextApps.push({ id, botToken, appToken, enabled, ...(directory ? { directory } : {}) });
+            nextApps.push({ id, botToken, appToken, enabled, ...(directory ? { directory } : {}), ...mergeDefaults(record) });
           }
           if (!found) {
-            nextApps.push({ id, botToken, appToken, enabled, ...(directoryInput ? { directory: directoryInput } : {}) });
+            nextApps.push({ id, botToken, appToken, enabled, ...(directoryInput ? { directory: directoryInput } : {}), ...defaultsPatch });
           }
 
           const next: OpenCodeRouterConfigFile = {
@@ -1117,9 +1224,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
               appToken,
               enabled,
               ...(nextDirectory ? { directory: String(nextDirectory).trim() } : {}),
+              ...mergeDefaults(prev as Record<string, unknown>),
             };
           } else {
-            config.slackApps.push({ id, botToken, appToken, enabled, ...(directoryInput ? { directory: directoryInput } : {}) });
+            config.slackApps.push({ id, botToken, appToken, enabled, ...(directoryInput ? { directory: directoryInput } : {}), ...defaultsPatch });
           }
 
           const key = adapterKey("slack", id);
@@ -1516,6 +1624,17 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
             targets,
           };
         },
+
+        // Extension channels (Feishu, Mattermost) — generated from ChannelDefs
+        ...createExtBridgeHandlers(
+          config,
+          adapters,
+          logger,
+          handleInbound,
+          mediaStore,
+          normalizeIdentityId,
+          startAdapterBounded,
+        ),
       },
     );
   }
@@ -1676,7 +1795,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         "telegram",
         input.identityId,
         input.peerId,
-        "This Telegram bot is private. Ask your OpenWork host for the pairing code, then send /pair <code>.",
+        "This Telegram bot is private. Ask your wudong host for the pairing code, then send /pair <code>.",
         { kind: "system" },
       );
       return "handled";
@@ -1687,7 +1806,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         "telegram",
         input.identityId,
         input.peerId,
-        "This Telegram bot is private but missing a pairing code. Ask your OpenWork host to reconnect it.",
+        "This Telegram bot is private but missing a pairing code. Ask your wudong host to reconnect it.",
         { kind: "system" },
       );
       return "handled";
@@ -1708,7 +1827,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         "telegram",
         input.identityId,
         input.peerId,
-        "No workspace directory configured for this identity. Ask your OpenWork host to set it, or reply with /dir <path>.",
+        "No workspace directory configured for this identity. Ask your wudong host to set it, or reply with /dir <path>.",
         { kind: "system" },
       );
       return "handled";
@@ -1825,16 +1944,40 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     const identityDirectory = resolveIdentityDirectory(inbound.channel, inbound.identityId);
 
-    const boundDirectoryCandidate =
-      binding?.directory?.trim() || session?.directory?.trim() || identityDirectory || defaultDirectory;
+    // identity.directory 是 host 端的权威配置；只有当 binding/session 在它之下时才尊重，
+    // 否则视为陈旧记录（例如 identity.directory 刚被改过），自动失效并落回 identity.directory。
+    const identityRoot = identityDirectory ? resolve(identityDirectory) : "";
+    const isUnderIdentityRoot = (candidate: string | undefined) => {
+      if (!candidate?.trim() || !identityRoot) return true;
+      return isWithinWorkspaceRootPath({
+        workspaceRoot: identityRoot,
+        candidate: resolve(candidate),
+        platform: process.platform,
+      });
+    };
+    let bindingDir = binding?.directory?.trim();
+    let sessionDir = session?.directory?.trim();
+    if (bindingDir && !isUnderIdentityRoot(bindingDir)) {
+      store.deleteBinding(inbound.channel, inbound.identityId, peerKey);
+      bindingDir = undefined;
+      binding = null;
+    }
+    if (sessionDir && !isUnderIdentityRoot(sessionDir)) {
+      store.deleteSession(inbound.channel, inbound.identityId, peerKey);
+      sessionDir = undefined;
+      session = null;
+    }
 
-    const hasExplicitBinding = Boolean(binding?.directory?.trim() || session?.directory?.trim() || identityDirectory);
+    const boundDirectoryCandidate =
+      bindingDir || sessionDir || identityDirectory || defaultDirectory;
+
+    const hasExplicitBinding = Boolean(bindingDir || sessionDir || identityDirectory);
     if (!boundDirectoryCandidate || (!hasExplicitBinding && isDangerousRootDirectory(boundDirectoryCandidate))) {
       await sendText(
         inbound.channel,
         inbound.identityId,
         inbound.peerId,
-        "No workspace directory configured for this identity. Ask your OpenWork host to set it, or reply with /dir <path>.",
+        "No workspace directory configured for this identity. Ask your wudong host to set it, or reply with /dir <path>.",
         { kind: "system" },
       );
       return;
@@ -1894,43 +2037,45 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       reportThinking(runState);
       startTyping(runState);
       try {
-        const effectiveModel = getUserModel(inbound.channel, inbound.identityId, peerKey, config.model);
-        const messagingAgent = await loadMessagingAgentConfig();
-        const effectiveInstructions = [messagingAgent.instructions, DEFAULT_MESSAGING_AGENT_INSTRUCTIONS]
-          .map((value) => value.trim())
-          .filter(Boolean)
-          .join("\n\n");
+        const identityDefaults = resolveIdentityDefaults(inbound.channel, inbound.identityId);
+        const effectiveModel =
+          getUserModel(inbound.channel, inbound.identityId, peerKey, undefined) ??
+          identityDefaults?.defaultModel ??
+          config.model;
+        const effectiveAgent =
+          getUserAgent(inbound.channel, inbound.identityId, peerKey) ??
+          identityDefaults?.defaultAgent;
         const attachmentSummary = summarizeInboundPartsForPrompt(inbound.parts);
         const incomingText = inbound.text || "(no text; user sent media)";
-        const promptText = [
-          "You are handling a Slack/Telegram message via OpenWork.",
-          `Workspace agent file: ${messagingAgent.filePath}`,
-          ...(messagingAgent.selectedAgent ? [`Selected OpenCode agent: ${messagingAgent.selectedAgent}`] : []),
-          "Follow these workspace messaging instructions:",
-          effectiveInstructions,
-          "",
-          "Incoming user message:",
-          incomingText,
-          ...(attachmentSummary.length ? ["", "Incoming attachments:", ...attachmentSummary] : []),
-        ].join("\n");
+        const promptText = attachmentSummary.length
+          ? [incomingText, "", "[attachments]", ...attachmentSummary].join("\n")
+          : incomingText;
         logger.debug(
           {
             sessionID,
             length: inbound.text.length,
             model: effectiveModel,
-            agent: messagingAgent.selectedAgent,
+            agent: effectiveAgent,
           },
           "prompt start",
         );
 
         type PromptPart = { type?: string; text?: string; ignored?: boolean };
 
-        const extractReply = (parts: PromptPart[]) =>
-          parts
-            .filter((part) => part.type === "text" && !part.ignored)
-            .map((part) => part.text ?? "")
-            .join("\n")
+        // 剥掉模型内联思考块（<think>/<thinking>/<reasoning>），避免泄露到最终回复
+        const stripThinking = (text: string) =>
+          text
+            .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+            .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, "")
             .trim();
+
+        const extractReply = (parts: PromptPart[]) =>
+          stripThinking(
+            parts
+              .filter((part) => part.type === "text" && !part.ignored)
+              .map((part) => part.text ?? "")
+              .join("\n"),
+          );
 
         const logPromptResponse = (attempt: "initial" | "retry", parts: PromptPart[]) => {
           const textParts = parts.filter((part) => part.type === "text" && !part.ignored);
@@ -1950,9 +2095,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         const runPrompt = async (): Promise<PromptPart[]> => {
           const response = await getClient(boundDirectory).session.prompt({
             sessionID,
+            directory: boundDirectory,
             parts: [{ type: "text", text: promptText }],
             ...(effectiveModel ? { model: effectiveModel } : {}),
-            ...(messagingAgent.selectedAgent ? { agent: messagingAgent.selectedAgent } : {}),
+            ...(effectiveAgent ? { agent: effectiveAgent } : {}),
           });
           return (response as { parts?: PromptPart[] }).parts ?? [];
         };
@@ -1999,24 +2145,24 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         logger.error({ error: errorDetails, sessionID }, "prompt failed");
         
         // Extract meaningful error details
-        let errorMessage = "Error: failed to reach OpenCode.";
+        let errorMessage = "Error: failed to reach tron.";
         if (error instanceof Error) {
           const msg = error.message || "";
           // Check for common error patterns
           if (msg.includes("401") || msg.includes("Unauthorized")) {
-            errorMessage = "Error: OpenCode authentication failed (401). Check credentials.";
+            errorMessage = "Error: tron authentication failed (401). Check credentials.";
           } else if (msg.includes("403") || msg.includes("Forbidden")) {
-            errorMessage = "Error: OpenCode access forbidden (403).";
+            errorMessage = "Error: tron access forbidden (403).";
           } else if (msg.includes("404") || msg.includes("Not Found")) {
-            errorMessage = "Error: OpenCode endpoint not found (404).";
+            errorMessage = "Error: tron endpoint not found (404).";
           } else if (msg.includes("429") || msg.includes("rate limit")) {
             errorMessage = "Error: Rate limited. Please wait and try again.";
           } else if (msg.includes("500") || msg.includes("Internal Server")) {
-            errorMessage = "Error: OpenCode server error (500).";
+            errorMessage = "Error: tron server error (500).";
           } else if (msg.includes("model") || msg.includes("provider")) {
             errorMessage = `Error: Model/provider issue - ${msg.slice(0, 100)}`;
           } else if (msg.includes("ECONNREFUSED") || msg.includes("connection")) {
-            errorMessage = "Error: Cannot connect to OpenCode. Is it running?";
+            errorMessage = "Error: Cannot connect to tron. Is it running?";
           } else if (msg.trim()) {
             // Include the actual error message (truncated)
             errorMessage = `Error: ${msg.slice(0, 150)}`;
@@ -2058,20 +2204,25 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     // /model command - show current model
     if (command === "model") {
-      const current = getUserModel(channel, identityId, peerKey, config.model);
+      const identityDefaults = resolveIdentityDefaults(channel, identityId);
+      const current =
+        getUserModel(channel, identityId, peerKey, undefined) ??
+        identityDefaults?.defaultModel ??
+        config.model;
       const modelStr = current ? `${current.providerID}/${current.modelID}` : "default";
       await sendText(channel, identityId, peerId, `Current model: ${modelStr}`, { kind: "system" });
       return true;
     }
 
-    // /reset command - clear model override and session
+    // /reset command - clear model + agent overrides and session
     if (command === "reset") {
       setUserModel(channel, identityId, peerKey, undefined);
+      setUserAgent(channel, identityId, peerKey, undefined);
       store.deleteSession(channel, identityId, peerKey);
-      await sendText(channel, identityId, peerId, "Session and model reset. Send a message to start fresh.", {
+      await sendText(channel, identityId, peerId, "Session, model and agent reset. Send a message to start fresh.", {
         kind: "system",
       });
-      logger.info({ channel, peerId: peerKey }, "session and model reset");
+      logger.info({ channel, peerId: peerKey }, "session, model and agent reset");
       return true;
     }
 
@@ -2120,25 +2271,29 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     }
 
     if (command === "agent") {
-      const config = await loadMessagingAgentConfig();
-      await sendText(
-        channel,
-        identityId,
-        peerId,
-        [
-          `Scope: workspace`,
-          `Agent file: ${config.filePath}`,
-          `OpenCode agent: ${config.selectedAgent ?? "(none)"}`,
-          `Status: ${config.loaded ? "loaded" : "missing or empty"}`,
-        ].join("\n"),
-        { kind: "system" },
-      );
+      const next = args.join(" ").trim();
+      const identityDefaults = resolveIdentityDefaults(channel, identityId);
+      if (!next) {
+        const current =
+          getUserAgent(channel, identityId, peerKey) ?? identityDefaults?.defaultAgent;
+        await sendText(
+          channel,
+          identityId,
+          peerId,
+          `Current agent: ${current ?? "(wudong default)"}`,
+          { kind: "system" },
+        );
+        return true;
+      }
+      setUserAgent(channel, identityId, peerKey, next);
+      await sendText(channel, identityId, peerId, `Agent switched to ${next}`, { kind: "system" });
+      logger.info({ channel, peerId: peerKey, agent: next }, "agent switched via command");
       return true;
     }
 
     // /help command
     if (command === "help") {
-      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private Telegram bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
+      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private Telegram bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent <name> - switch agent for this chat\n/agent - show current agent\n/model - show current\n/reset - start fresh\n/help - this`;
       await sendText(channel, identityId, peerId, helpText, { kind: "system" });
       return true;
     }
@@ -2157,6 +2312,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     const title = `${input.channel}/${input.identityId} ${input.peerId}`;
     const session = await getClient(input.directory).session.create({
       title,
+      directory: input.directory,
       permission: buildPermissionRules(config.permissionMode),
     });
     const sessionID = (session as { id?: string }).id;

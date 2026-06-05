@@ -10,7 +10,7 @@ const packageDir = path.resolve(moduleDir, "..");
 dotenv.config({ path: path.join(packageDir, ".env") });
 dotenv.config();
 
-export type ChannelName = "telegram" | "slack";
+export type ChannelName = "telegram" | "slack" | "feishu" | "mattermost";
 
 export type TelegramIdentity = {
   id: string;
@@ -23,6 +23,8 @@ export type TelegramIdentity = {
   access?: "public" | "private";
   // sha256 hash (hex) of normalized pairing code for private mode.
   pairingCodeHash?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
 };
 
 export type SlackIdentity = {
@@ -31,6 +33,34 @@ export type SlackIdentity = {
   appToken: string;
   enabled?: boolean;
   directory?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+};
+
+export type FeishuIdentity = {
+  id: string;
+  appId: string;
+  appSecret: string;
+  enabled?: boolean;
+  directory?: string;
+  domain?: "feishu" | "lark";
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+};
+
+export type MattermostIdentity = {
+  id: string;
+  serverUrl: string;
+  accessToken: string;
+  enabled?: boolean;
+  directory?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+};
+
+export type ModelRef = {
+  providerID: string;
+  modelID: string;
 };
 
 export type OpenCodeRouterConfigFile = {
@@ -54,12 +84,15 @@ export type OpenCodeRouterConfigFile = {
       botToken?: string;
       appToken?: string;
     };
+    feishu?: {
+      enabled?: boolean;
+      apps?: FeishuIdentity[];
+    };
+    mattermost?: {
+      enabled?: boolean;
+      bots?: MattermostIdentity[];
+    };
   };
-};
-
-export type ModelRef = {
-  providerID: string;
-  modelID: string;
 };
 
 export type Config = {
@@ -72,6 +105,8 @@ export type Config = {
   model?: ModelRef;
   telegramBots: TelegramIdentity[];
   slackApps: SlackIdentity[];
+  feishuApps: FeishuIdentity[];
+  mattermostBots: MattermostIdentity[];
   dataDir: string;
   dbPath: string;
   logFile: string;
@@ -122,7 +157,7 @@ function expandHome(value: string): string {
 function resolveConfigPath(dataDir: string, env: EnvLike): string {
   const override = env.OPENCODE_ROUTER_CONFIG_PATH?.trim();
   if (override) return expandHome(override);
-  return path.join(dataDir, "opencode-router.json");
+  return path.join(dataDir, "tron-router.json");
 }
 
 export function readConfigFile(configPath: string): { exists: boolean; config: OpenCodeRouterConfigFile } {
@@ -163,6 +198,23 @@ function normalizePairingCodeHash(value: unknown): string {
   return raw;
 }
 
+function coerceDefaults(record: Record<string, unknown>): {
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+} {
+  const result: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+  const agent = typeof record.defaultAgent === "string" ? record.defaultAgent.trim() : "";
+  if (agent) result.defaultAgent = agent;
+  const model = record.defaultModel;
+  if (model && typeof model === "object") {
+    const m = model as { providerID?: unknown; modelID?: unknown };
+    if (typeof m.providerID === "string" && typeof m.modelID === "string" && m.providerID.trim() && m.modelID.trim()) {
+      result.defaultModel = { providerID: m.providerID.trim(), modelID: m.modelID.trim() };
+    }
+  }
+  return result;
+}
+
 function coerceTelegramBots(file: OpenCodeRouterConfigFile): TelegramIdentity[] {
   const telegram = file.channels?.telegram;
   const bots = Array.isArray((telegram as any)?.bots) ? ((telegram as any).bots as unknown[]) : [];
@@ -182,6 +234,7 @@ function coerceTelegramBots(file: OpenCodeRouterConfigFile): TelegramIdentity[] 
       enabled: record.enabled === undefined ? true : record.enabled === true,
       ...(directory ? { directory } : {}),
       ...(access === "private" ? { access, ...(pairingCodeHash ? { pairingCodeHash } : {}) } : { access: "public" }),
+      ...coerceDefaults(record),
     });
   }
   if (normalized.length) return normalized;
@@ -212,6 +265,7 @@ function coerceSlackApps(file: OpenCodeRouterConfigFile): SlackIdentity[] {
       appToken,
       enabled: record.enabled === undefined ? true : record.enabled === true,
       ...(directory ? { directory } : {}),
+      ...coerceDefaults(record),
     });
   }
   if (normalized.length) return normalized;
@@ -225,16 +279,66 @@ function coerceSlackApps(file: OpenCodeRouterConfigFile): SlackIdentity[] {
   return [];
 }
 
+function coerceFeishuApps(file: OpenCodeRouterConfigFile): FeishuIdentity[] {
+  const feishu = file.channels?.feishu;
+  const apps = Array.isArray((feishu as any)?.apps) ? ((feishu as any).apps as unknown[]) : [];
+  const normalized: FeishuIdentity[] = [];
+  for (const entry of apps) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const appId = typeof record.appId === "string" ? record.appId.trim() : "";
+    const appSecret = typeof record.appSecret === "string" ? record.appSecret.trim() : "";
+    if (!appId || !appSecret) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    const domain = typeof record.domain === "string" && record.domain.trim() === "lark" ? "lark" : "feishu";
+    normalized.push({
+      id,
+      appId,
+      appSecret,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      domain,
+      ...(directory ? { directory } : {}),
+      ...coerceDefaults(record),
+    });
+  }
+  return normalized;
+}
+
+function coerceMattermostBots(file: OpenCodeRouterConfigFile): MattermostIdentity[] {
+  const mattermost = file.channels?.mattermost;
+  const bots = Array.isArray((mattermost as any)?.bots) ? ((mattermost as any).bots as unknown[]) : [];
+  const normalized: MattermostIdentity[] = [];
+  for (const entry of bots) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const serverUrl = typeof record.serverUrl === "string" ? record.serverUrl.trim() : "";
+    const accessToken = typeof record.accessToken === "string" ? record.accessToken.trim() : "";
+    if (!serverUrl || !accessToken) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    normalized.push({
+      id,
+      serverUrl,
+      accessToken,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+      ...coerceDefaults(record),
+    });
+  }
+  return normalized;
+}
+
 export function loadConfig(
   env: EnvLike = process.env,
   options: { requireOpencode?: boolean } = {},
 ): Config {
   const requireOpencode = options.requireOpencode ?? false;
 
-  const defaultDataDir = path.join(os.homedir(), ".openwork", "opencode-router");
+  const defaultDataDir = path.join(os.homedir(), ".wudong", "tron-router");
   const dataDir = expandHome(env.OPENCODE_ROUTER_DATA_DIR ?? defaultDataDir);
-  const dbPath = expandHome(env.OPENCODE_ROUTER_DB_PATH ?? path.join(dataDir, "opencode-router.db"));
-  const logFile = expandHome(env.OPENCODE_ROUTER_LOG_FILE ?? path.join(dataDir, "logs", "opencode-router.log"));
+  const dbPath = expandHome(env.OPENCODE_ROUTER_DB_PATH ?? path.join(dataDir, "tron-router.db"));
+  const logFile = expandHome(env.OPENCODE_ROUTER_LOG_FILE ?? path.join(dataDir, "logs", "tron-router.log"));
   const configPath = resolveConfigPath(dataDir, env);
   let { config: configFile } = readConfigFile(configPath);
   const opencodeDirectory = env.OPENCODE_DIRECTORY?.trim() || configFile.opencodeDirectory || "";
@@ -250,6 +354,8 @@ export function loadConfig(
   // for single-identity setups.
   const telegramBots = coerceTelegramBots(configFile);
   const slackApps = coerceSlackApps(configFile);
+  const feishuApps = coerceFeishuApps(configFile);
+  const mattermostBots = coerceMattermostBots(configFile);
 
   const envTelegram = env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
   if (envTelegram && !telegramBots.some((bot) => bot.token === envTelegram)) {
@@ -283,11 +389,13 @@ export function loadConfig(
       ...app,
       enabled: app.enabled !== false && parseBoolean(env.SLACK_ENABLED, slackEnabledDefault),
     })),
+    feishuApps,
+    mattermostBots,
     dataDir,
     dbPath,
     logFile,
     toolUpdatesEnabled: parseBoolean(env.TOOL_UPDATES_ENABLED, false),
-    groupsEnabled: parseBoolean(env.GROUPS_ENABLED, configFile.groupsEnabled ?? false),
+    groupsEnabled: parseBoolean(env.GROUPS_ENABLED, configFile.groupsEnabled ?? true),
     permissionMode,
     toolOutputLimit,
     healthPort,

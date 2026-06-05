@@ -180,8 +180,14 @@ export function createFeishuAdapter(
 
         const mentions = Array.isArray(message.mentions) ? message.mentions : [];
         const mentioned = mentions.some((m: any) => {
-          const mentionId = typeof m?.id?.open_id === "string" ? m.id.open_id : "";
-          return mentionId === botOpenId;
+          // 飞书 mentions[i].id 可能是字符串（open_id）或对象 {open_id, union_id, user_id}
+          if (typeof m?.id === "string") return m.id === botOpenId;
+          const obj = m?.id ?? {};
+          return (
+            obj.open_id === botOpenId ||
+            obj.union_id === botOpenId ||
+            obj.user_id === botOpenId
+          );
         });
         if (!mentioned) {
           log.debug({ chatId }, "feishu message ignored (not mentioned in group)");
@@ -409,7 +415,7 @@ export function createFeishuAdapter(
     const partResults: MessageDeliveryResult["partResults"] = [];
     let sentParts = 0;
     const meta = message.meta;
-    const renderAsCard = meta?.kind === "reply";
+    const renderAsCard = meta?.kind === "reply" || meta?.kind === "tool";
 
     for (let index = 0; index < message.parts.length; index += 1) {
       const part = message.parts[index];
@@ -595,15 +601,20 @@ export function createFeishuAdapter(
         log.debug("feishu contact.user.get failed; trying bot.info");
       }
 
-      // Fallback / supplementary: bot.info gives the canonical app/bot name.
-      if (!botName) {
+      // Fallback / supplementary: /open-apis/bot/v3/info gives bot open_id and app_name.
+      if (!botOpenId || !botName) {
         try {
-          const info = await (client as any).bot?.info?.get?.();
-          const bot = info?.data?.bot ?? info?.bot;
+          const info: any = await (client as any).request({
+            url: "/open-apis/bot/v3/info",
+            method: "GET",
+          });
+          const bot = info?.bot ?? info?.data?.bot;
+          const openId = typeof bot?.open_id === "string" ? bot.open_id.trim() : "";
           const name = typeof bot?.app_name === "string" ? bot.app_name.trim() : "";
-          if (name) botName = name;
-        } catch {
-          log.warn("feishu could not resolve bot name");
+          if (!botOpenId && openId) botOpenId = openId;
+          if (!botName && name) botName = name;
+        } catch (error) {
+          log.warn({ error }, "feishu bot/v3/info failed");
         }
       }
 

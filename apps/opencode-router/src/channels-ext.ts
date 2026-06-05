@@ -1,11 +1,16 @@
 /**
- * channels-ext.ts — Extension registry for Feishu & Mattermost channels.
+ * channels-ext.ts — Declarative channel registry for extension channels.
  *
- * All new channel logic lives in this file and the adapter files (feishu.ts, mattermost.ts).
- * Existing source files (config.ts, bridge.ts, health.ts, cli.ts) only import thin hooks
- * from here, keeping their diffs minimal for upstream sync.
+ * Each channel defines itself with a ChannelDef describing:
+ *  - Where its identities live in runtime Config and config-file OpenCodeRouterConfigFile
+ *  - How to create its adapter
+ *  - How to validate/construct identities from upsert input
+ *  - CLI options for the `add` command
+ *
+ * Adding a new channel only requires a ChannelDef entry in CHANNEL_DEFINITIONS.
+ * All adapter registration, health handlers, HTTP routes, and CLI commands
+ * are generated automatically.
  */
-
 import type http from "node:http";
 import type { Logger } from "pino";
 import type { Command } from "commander";
@@ -15,95 +20,112 @@ import type {
   Config,
   FeishuIdentity,
   MattermostIdentity,
+  ModelRef,
   OpenCodeRouterConfigFile,
 } from "./config.js";
 import { readConfigFile, writeConfigFile } from "./config.js";
 import type { InboundMessagePart, MessageDeliveryResult, OutboundMessagePart } from "./media.js";
 import type { MediaStore } from "./media-store.js";
 
-import { createFeishuAdapter, isFeishuPeerId } from "./feishu.js";
-import { createMattermostAdapter, isMattermostPeerId } from "./mattermost.js";
+import { createFeishuAdapter, isFeishuPeerId, type FeishuAdapter } from "./feishu.js";
+import { createMattermostAdapter, isMattermostPeerId, type MattermostAdapter } from "./mattermost.js";
 
 // Re-export peer ID helpers for bridge.ts.
 export { isFeishuPeerId, isMattermostPeerId };
 
-// ---------------------------------------------------------------------------
-// Channel validation
-// ---------------------------------------------------------------------------
-
-const EXT_CHANNELS = new Set<string>(["feishu", "mattermost"]);
-
-export function isExtChannel(name: string): name is "feishu" | "mattermost" {
-  return EXT_CHANNELS.has(name);
+function parseModelString(value: unknown): ModelRef | undefined {
+  if (!value || typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const sep = trimmed.indexOf("/");
+  if (sep <= 0 || sep === trimmed.length - 1) return undefined;
+  return { providerID: trimmed.slice(0, sep), modelID: trimmed.slice(sep + 1) };
 }
 
-export function isValidChannel(name: string): name is ChannelName {
-  return name === "telegram" || name === "slack" || isExtChannel(name);
+function extractDefaults(
+  input: Record<string, unknown>,
+  existing?: { defaultAgent?: string; defaultModel?: ModelRef },
+): { defaultAgent?: string; defaultModel?: ModelRef } {
+  const out: { defaultAgent?: string; defaultModel?: ModelRef } = {};
+
+  if ("defaultAgent" in input) {
+    const v = typeof input.defaultAgent === "string" ? input.defaultAgent.trim() : "";
+    if (v) out.defaultAgent = v;
+  } else if (existing?.defaultAgent) {
+    out.defaultAgent = existing.defaultAgent;
+  }
+
+  if ("defaultModel" in input) {
+    const raw = input.defaultModel;
+    if (raw && typeof raw === "object") {
+      const m = raw as { providerID?: unknown; modelID?: unknown };
+      if (typeof m.providerID === "string" && typeof m.modelID === "string" && m.providerID.trim() && m.modelID.trim()) {
+        out.defaultModel = { providerID: m.providerID.trim(), modelID: m.modelID.trim() };
+      }
+    } else if (typeof raw === "string") {
+      const parsed = parseModelString(raw);
+      if (parsed) out.defaultModel = parsed;
+    }
+  } else if (existing?.defaultModel) {
+    out.defaultModel = existing.defaultModel;
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------
-// Types shared with health.ts
+// Generic Channel Definition
 // ---------------------------------------------------------------------------
 
-export type FeishuIdentityItem = {
-  id: string;
-  enabled: boolean;
-  running: boolean;
+type CliAddOption = {
+  flag: string;
+  arg: string;
+  desc: string;
+  required: boolean;
 };
 
-export type MattermostIdentityItem = {
-  id: string;
-  enabled: boolean;
-  running: boolean;
-};
+type ChannelDef<I extends { id: string; enabled?: boolean; directory?: string }> = {
+  /** Channel name literal */
+  channel: "feishu" | "mattermost";
+  /** Key in channels.<channel> config file block (e.g. "apps" or "bots") */
+  listKey: string;
 
-export type FeishuIdentitiesResult = { items: FeishuIdentityItem[] };
-export type MattermostIdentitiesResult = { items: MattermostIdentityItem[] };
+  /** Runtime Config identity list getter */
+  runtimeList: (config: Config) => I[];
+  /** Runtime Config identity list setter */
+  setRuntimeList: (config: Config, identities: I[]) => void;
+  /** Config file identity list getter */
+  configList: (cfg: OpenCodeRouterConfigFile) => Record<string, unknown>[];
+  /** Config file identity list setter (returns updated config file) */
+  setConfigList: (cfg: OpenCodeRouterConfigFile, identities: Record<string, unknown>[]) => OpenCodeRouterConfigFile;
 
-export type FeishuIdentityUpsertInput = {
-  id?: string;
-  appId: string;
-  appSecret: string;
-  enabled?: boolean;
-  directory?: string;
-  domain?: "feishu" | "lark";
-};
+  /** Adapter factory */
+  createAdapter: (
+    identity: I,
+    config: Config,
+    logger: Logger,
+    onMessage: (msg: InboundMessage) => void,
+    mediaStore: MediaStore,
+  ) => FeishuAdapter | MattermostAdapter;
 
-export type MattermostIdentityUpsertInput = {
-  id?: string;
-  serverUrl: string;
-  accessToken: string;
-  enabled?: boolean;
-  directory?: string;
-};
+  /** Required fields for upsert (fieldName → label) */
+  requiredFields: [string, string][];
 
-export type UpsertIdentityResult = {
-  id: string;
-  enabled: boolean;
-  applied?: boolean;
-  starting?: boolean;
-  error?: string;
-};
+  /** Construct an identity from parsed upsert input + existing identity (for directory merge) */
+  buildIdentity: (input: Record<string, unknown>, id: string, existingIdentity?: I) => I;
 
-export type DeleteIdentityResult = {
-  id: string;
-  deleted: boolean;
-  applied?: boolean;
-  starting?: boolean;
-  error?: string;
-};
+  /** Derive a default identity id from input fields when user leaves id empty */
+  deriveDefaultId: (input: Record<string, unknown>) => string;
 
-export type ExtHealthHandlers = {
-  listFeishuIdentities?: () => Promise<FeishuIdentitiesResult>;
-  upsertFeishuIdentity?: (input: FeishuIdentityUpsertInput) => Promise<UpsertIdentityResult>;
-  deleteFeishuIdentity?: (id: string) => Promise<DeleteIdentityResult>;
-  listMattermostIdentities?: () => Promise<MattermostIdentitiesResult>;
-  upsertMattermostIdentity?: (input: MattermostIdentityUpsertInput) => Promise<UpsertIdentityResult>;
-  deleteMattermostIdentity?: (id: string) => Promise<DeleteIdentityResult>;
+  /** Non-secret fields to expose in list responses (for UI prefill on edit) */
+  listFields: (keyof I)[];
+
+  /** CLI options for the `add` subcommand */
+  cliAddOptions: CliAddOption[];
 };
 
 // ---------------------------------------------------------------------------
-// Adapter type (mirrors bridge.ts Adapter)
+// Shared types
 // ---------------------------------------------------------------------------
 
 type SendMeta = {
@@ -144,7 +166,172 @@ type InboundMessage = {
 type HandleInbound = (message: InboundMessage) => void;
 
 // ---------------------------------------------------------------------------
-// Adapter registration (called from bridge.ts)
+// Health handler types
+// ---------------------------------------------------------------------------
+
+export type ExtHealthHandlers = {
+  listFeishuIdentities?: () => Promise<{ items: Array<{ id: string; enabled: boolean; running: boolean }> }>;
+  upsertFeishuIdentity?: (input: { id?: string; appId: string; appSecret: string; enabled?: boolean; directory?: string; domain?: "feishu" | "lark" }) => Promise<UpsertIdentityResult>;
+  deleteFeishuIdentity?: (id: string) => Promise<DeleteIdentityResult>;
+  listMattermostIdentities?: () => Promise<{ items: Array<{ id: string; enabled: boolean; running: boolean }> }>;
+  upsertMattermostIdentity?: (input: { id?: string; serverUrl: string; accessToken: string; enabled?: boolean; directory?: string }) => Promise<UpsertIdentityResult>;
+  deleteMattermostIdentity?: (id: string) => Promise<DeleteIdentityResult>;
+};
+
+export type UpsertIdentityResult = {
+  id: string;
+  enabled: boolean;
+  applied?: boolean;
+  starting?: boolean;
+  error?: string;
+};
+
+export type DeleteIdentityResult = {
+  id: string;
+  deleted: boolean;
+  applied?: boolean;
+  starting?: boolean;
+  error?: string;
+};
+
+export function isValidChannel(name: string): name is ChannelName {
+  return name === "telegram" || name === "slack" || name === "feishu" || name === "mattermost";
+}
+
+// ---------------------------------------------------------------------------
+// Channel definitions (the ONLY place channel-specific config lives)
+// ---------------------------------------------------------------------------
+
+const FEISHU_DEF: ChannelDef<FeishuIdentity> = {
+  channel: "feishu",
+  listKey: "apps",
+
+  runtimeList: (c) => c.feishuApps,
+  setRuntimeList: (c, v) => {
+    c.feishuApps.splice(0, c.feishuApps.length, ...(v as FeishuIdentity[]));
+  },
+  configList: (cfg) => {
+    const ch = cfg.channels?.feishu;
+    return Array.isArray((ch as any)?.apps) ? ((ch as any).apps as Record<string, unknown>[]) : [];
+  },
+  setConfigList: (cfg, identities) => {
+    const next = { ...cfg };
+    next.channels = next.channels ?? {};
+    const existing = next.channels?.feishu ?? {};
+    next.channels.feishu = { ...existing, enabled: true, apps: identities as FeishuIdentity[] };
+    return next;
+  },
+
+  createAdapter: (identity, config, logger, onMessage, mediaStore) =>
+    createFeishuAdapter(identity, config, logger, onMessage as any, mediaStore),
+
+  requiredFields: [
+    ["appId", "App ID"],
+    ["appSecret", "App Secret"],
+  ],
+
+  buildIdentity: (input, id, existing): FeishuIdentity => ({
+    id,
+    appId: String(input.appId ?? "").trim(),
+    appSecret: String(input.appSecret ?? "").trim(),
+    enabled: input.enabled !== false,
+    domain: (input.domain === "lark" ? "lark" : "feishu") as "feishu" | "lark",
+    ...(typeof input.directory === "string" && input.directory.trim()
+      ? { directory: String(input.directory).trim() }
+      : existing?.directory
+        ? { directory: existing.directory }
+        : {}),
+    ...extractDefaults(input, existing),
+  }),
+
+  deriveDefaultId: (input) => {
+    const appId = typeof input.appId === "string" ? input.appId.trim() : "";
+    return appId || "default";
+  },
+
+  listFields: ["appId", "domain"],
+
+  cliAddOptions: [
+    { flag: "--app-id", arg: "<appId>", desc: "Feishu App ID", required: true },
+    { flag: "--app-secret", arg: "<appSecret>", desc: "Feishu App Secret", required: true },
+    { flag: "--domain", arg: "<domain>", desc: "feishu or lark (default: feishu)", required: false },
+    { flag: "--default-agent", arg: "<agent>", desc: "Default OpenCode agent name", required: false },
+    { flag: "--default-model", arg: "<provider/model>", desc: "Default model (providerID/modelID)", required: false },
+  ],
+};
+
+const MATTERMOST_DEF: ChannelDef<MattermostIdentity> = {
+  channel: "mattermost",
+  listKey: "bots",
+
+  runtimeList: (c) => c.mattermostBots,
+  setRuntimeList: (c, v) => {
+    c.mattermostBots.splice(0, c.mattermostBots.length, ...(v as MattermostIdentity[]));
+  },
+  configList: (cfg) => {
+    const ch = cfg.channels?.mattermost;
+    return Array.isArray((ch as any)?.bots) ? ((ch as any).bots as Record<string, unknown>[]) : [];
+  },
+  setConfigList: (cfg, identities) => {
+    const next = { ...cfg };
+    next.channels = next.channels ?? {};
+    const existing = next.channels?.mattermost ?? {};
+    next.channels.mattermost = { ...existing, enabled: true, bots: identities as MattermostIdentity[] };
+    return next;
+  },
+
+  createAdapter: (identity, config, logger, onMessage, mediaStore) =>
+    createMattermostAdapter(identity, config, logger, onMessage as any, mediaStore),
+
+  requiredFields: [
+    ["serverUrl", "Server URL"],
+    ["accessToken", "Access Token"],
+  ],
+
+  buildIdentity: (input, id, existing): MattermostIdentity => ({
+    id,
+    serverUrl: String(input.serverUrl ?? "").trim(),
+    accessToken: String(input.accessToken ?? "").trim(),
+    enabled: input.enabled !== false,
+    ...(typeof input.directory === "string" && input.directory.trim()
+      ? { directory: String(input.directory).trim() }
+      : existing?.directory
+        ? { directory: existing.directory }
+        : {}),
+    ...extractDefaults(input, existing),
+  }),
+
+  deriveDefaultId: (input) => {
+    const url = typeof input.serverUrl === "string" ? input.serverUrl.trim() : "";
+    try {
+      const host = new URL(url).host;
+      return host ? `mm-${host}` : "default";
+    } catch {
+      return "default";
+    }
+  },
+
+  listFields: ["serverUrl"],
+
+  cliAddOptions: [
+    { flag: "--server-url", arg: "<serverUrl>", desc: "Mattermost server URL", required: true },
+    { flag: "--access-token", arg: "<accessToken>", desc: "Bot access token", required: true },
+    { flag: "--default-agent", arg: "<agent>", desc: "Default OpenCode agent name", required: false },
+    { flag: "--default-model", arg: "<provider/model>", desc: "Default model (providerID/modelID)", required: false },
+  ],
+};
+
+/**
+ * All registered channel definitions. Adding a new channel means:
+ * 1. Define its ChannelDef here
+ * 2. Add its identity type to config.ts (ChannelName, Config, OpenCodeRouterConfigFile)
+ * 3. Add coercion function in config.ts
+ * Everything else (adapters, health, HTTP, CLI) is automatic.
+ */
+const CHANNEL_DEFS = [FEISHU_DEF, MATTERMOST_DEF] as ChannelDef<any>[];
+
+// ---------------------------------------------------------------------------
+// Generic: adapter registration
 // ---------------------------------------------------------------------------
 
 export function registerExtAdapters(
@@ -156,33 +343,23 @@ export function registerExtAdapters(
 ) {
   const adapterKey = (channel: string, id: string) => `${channel}:${id}`;
 
-  // Feishu adapters.
-  const enabledFeishu = config.feishuApps.filter((a) => a.enabled !== false);
-  if (enabledFeishu.length === 0) {
-    logger.info("feishu adapters disabled");
-  }
-  for (const app of enabledFeishu) {
-    const key = adapterKey("feishu", app.id);
-    logger.debug({ identityId: app.id }, "feishu adapter enabled");
-    const base = createFeishuAdapter(app, config, logger, handleInbound, mediaStore);
-    adapters.set(key, { ...base, key });
-  }
-
-  // Mattermost adapters.
-  const enabledMattermost = config.mattermostBots.filter((b) => b.enabled !== false);
-  if (enabledMattermost.length === 0) {
-    logger.info("mattermost adapters disabled");
-  }
-  for (const bot of enabledMattermost) {
-    const key = adapterKey("mattermost", bot.id);
-    logger.debug({ identityId: bot.id }, "mattermost adapter enabled");
-    const base = createMattermostAdapter(bot, config, logger, handleInbound, mediaStore);
-    adapters.set(key, { ...base, key });
+  for (const def of CHANNEL_DEFS) {
+    const identities = def.runtimeList(config).filter((a: any) => a.enabled !== false);
+    if (identities.length === 0) {
+      logger.info(`${def.channel} adapters disabled`);
+      continue;
+    }
+    for (const identity of identities) {
+      const key = adapterKey(def.channel, identity.id);
+      logger.debug({ identityId: identity.id }, `${def.channel} adapter enabled`);
+      const base = def.createAdapter(identity, config, logger, handleInbound, mediaStore);
+      adapters.set(key, { ...base, key });
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Bridge handlers (called from bridge.ts health server setup)
+// Generic: health handlers factory
 // ---------------------------------------------------------------------------
 
 export function createExtBridgeHandlers(
@@ -192,305 +369,175 @@ export function createExtBridgeHandlers(
   handleInbound: HandleInbound,
   mediaStore: MediaStore,
   normalizeIdentityId: (value: string | undefined) => string,
-  startAdapterBounded: (adapter: Adapter, options: { timeoutMs: number; onError?: (error: unknown) => void }) => Promise<AdapterStartResult>,
+  startAdapterBounded: (
+    adapter: Adapter,
+    options: { timeoutMs: number; onError?: (error: unknown) => void },
+  ) => Promise<AdapterStartResult>,
 ): ExtHealthHandlers {
   const adapterKey = (channel: string, id: string) => `${channel}:${id}`;
 
-  return {
-    // -------------------------------------------------------------------------
-    // Feishu
-    // -------------------------------------------------------------------------
-    listFeishuIdentities: async () => {
-      return {
-        items: config.feishuApps.map((app) => ({
-          id: app.id,
-          enabled: app.enabled !== false,
-          running: adapters.has(adapterKey("feishu", app.id)),
-        })),
-      };
-    },
+  function channelCap(def: ChannelDef<any>): string {
+    return def.channel.charAt(0).toUpperCase() + def.channel.slice(1);
+  }
 
-    upsertFeishuIdentity: async (input: FeishuIdentityUpsertInput) => {
-      const appId = input.appId?.trim() ?? "";
-      const appSecret = input.appSecret?.trim() ?? "";
-      if (!appId || !appSecret) throw new Error("appId and appSecret are required");
-      const id = normalizeIdentityId(input.id);
+  function makeListHandler(def: ChannelDef<any>) {
+    return async () => ({
+      items: def.runtimeList(config).map((item: any) => {
+        const extras: Record<string, unknown> = {};
+        for (const f of def.listFields) {
+          const v = item[f];
+          if (v !== undefined && v !== "") extras[f as string] = v;
+        }
+        return {
+          id: item.id,
+          enabled: item.enabled !== false,
+          running: adapters.has(adapterKey(def.channel, item.id)),
+          ...(item.directory ? { directory: item.directory } : {}),
+          ...(item.defaultAgent ? { defaultAgent: item.defaultAgent } : {}),
+          ...(item.defaultModel ? { defaultModel: item.defaultModel } : {}),
+          ...extras,
+        };
+      }),
+    });
+  }
+
+  function makeUpsertHandler(def: ChannelDef<any>) {
+    return async (input: Record<string, unknown>) => {
+      // Validate required fields
+      for (const [field, label] of def.requiredFields) {
+        const val = typeof input[field] === "string" ? String(input[field]).trim() : "";
+        if (!val) throw new Error(`${label} is required`);
+      }
+
+      const id = normalizeIdentityId(
+        typeof input.id === "string" && input.id.trim() ? input.id : def.deriveDefaultId(input),
+      );
       if (id === "env") throw new Error("identity id 'env' is reserved");
-      const enabled = input.enabled !== false;
-      const directoryInput = typeof input.directory === "string" ? input.directory.trim() : "";
-      const domainInput = input.domain === "lark" ? "lark" : "feishu";
+      const directoryInput = typeof input.directory === "string" ? String(input.directory).trim() : "";
 
-      // Persist to config file.
+      // Read existing identity from runtime list (for directory merge)
+      const existingIdentity = def.runtimeList(config).find((a: any) => a.id === id);
+
+      // Persist to config file
       const { config: current } = readConfigFile(config.configPath);
-      const feishu = current.channels?.feishu;
-      const apps = Array.isArray((feishu as any)?.apps) ? (((feishu as any).apps as unknown[]) ?? []) : [];
-      const nextApps: any[] = [];
+      const entries = def.configList(current);
+      const nextEntries: Record<string, unknown>[] = [];
       let found = false;
-      for (const entry of apps) {
+      for (const entry of entries) {
         if (!entry || typeof entry !== "object") continue;
-        const record = entry as Record<string, unknown>;
-        const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
+        const entryId = normalizeIdentityId(typeof entry.id === "string" ? entry.id : "default");
         if (entryId !== id) {
-          nextApps.push(entry);
+          nextEntries.push(entry);
           continue;
         }
         found = true;
-        const existingDirectory = typeof record.directory === "string" ? record.directory.trim() : "";
-        const directory = directoryInput || existingDirectory;
-        nextApps.push({ id, appId, appSecret, enabled, domain: domainInput, ...(directory ? { directory } : {}) });
+        const existingDirectory = typeof entry.directory === "string" ? String(entry.directory).trim() : "";
+        const mergedInput = {
+          ...input,
+          directory: directoryInput || existingDirectory,
+        };
+        nextEntries.push(def.buildIdentity(mergedInput, id, existingIdentity) as Record<string, unknown>);
       }
       if (!found) {
-        nextApps.push({ id, appId, appSecret, enabled, domain: domainInput, ...(directoryInput ? { directory: directoryInput } : {}) });
+        nextEntries.push(def.buildIdentity(input, id) as Record<string, unknown>);
       }
 
-      const next: OpenCodeRouterConfigFile = {
-        ...current,
-        channels: {
-          ...current.channels,
-          feishu: { ...(current.channels?.feishu ?? {}), enabled: true, apps: nextApps },
-        },
-      };
+      const next = def.setConfigList(current, nextEntries);
       next.version = next.version ?? 1;
       writeConfigFile(config.configPath, next);
       config.configFile = next;
 
-      // Update runtime identity list.
-      const existingIdx = config.feishuApps.findIndex((a) => a.id === id);
-      const runtimeIdentity: FeishuIdentity = {
-        id,
-        appId,
-        appSecret,
-        enabled,
-        domain: domainInput,
-        ...(directoryInput ? { directory: directoryInput } : existingIdx >= 0 && config.feishuApps[existingIdx]?.directory ? { directory: config.feishuApps[existingIdx].directory } : {}),
-      };
-      if (existingIdx >= 0) {
-        config.feishuApps[existingIdx] = runtimeIdentity;
-      } else {
-        config.feishuApps.push(runtimeIdentity);
-      }
+      // Rebuild runtime list from config entries
+      const rebuilt: any[] = nextEntries.map((e) =>
+        def.buildIdentity(e, normalizeIdentityId(typeof e.id === "string" ? e.id : undefined)),
+      );
+      def.setRuntimeList(config, rebuilt);
 
-      // Start/stop adapter.
-      const key = adapterKey("feishu", id);
+      // Start/stop adapter
+      const runtimeIdentity = def.runtimeList(config).find((a: any) => a.id === id)!;
+      const key = adapterKey(def.channel, id);
       const existing = adapters.get(key);
+      const enabled = runtimeIdentity.enabled !== false;
+
       if (!enabled) {
         if (existing) {
           try { await existing.stop(); } catch (error) {
-            logger.warn({ error, channel: "feishu", identityId: id }, "failed to stop feishu adapter");
+            logger.warn({ error, channel: def.channel, identityId: id }, `failed to stop ${def.channel} adapter`);
           }
           adapters.delete(key);
         }
-        return { id, enabled: false, applied: true };
+        return { id, enabled: false, applied: true } satisfies UpsertIdentityResult;
       }
 
       if (existing) {
         try { await existing.stop(); } catch (error) {
-          logger.warn({ error, channel: "feishu", identityId: id }, "failed to stop existing feishu adapter");
+          logger.warn({ error, channel: def.channel, identityId: id }, `failed to stop existing ${def.channel} adapter`);
         }
         adapters.delete(key);
       }
-      const base = createFeishuAdapter(runtimeIdentity, config, logger, handleInbound, mediaStore);
+      const base = def.createAdapter(runtimeIdentity, config, logger, handleInbound, mediaStore);
       const adapter = { ...base, key };
       adapters.set(key, adapter);
 
       const startResult = await startAdapterBounded(adapter, {
         timeoutMs: 5_000,
         onError: (error) => {
-          logger.error({ error, channel: "feishu", identityId: id }, "feishu adapter start failed");
+          logger.error({ error, channel: def.channel, identityId: id }, `${def.channel} adapter start failed`);
           adapters.delete(key);
         },
       });
 
-      if (startResult.status === "timeout") return { id, enabled: true, applied: false, starting: true };
-      if (startResult.status === "error") return { id, enabled: true, applied: false, error: String(startResult.error) };
-      return { id, enabled: true, applied: true };
-    },
+      if (startResult.status === "timeout") return { id, enabled: true, applied: false, starting: true } satisfies UpsertIdentityResult;
+      if (startResult.status === "error") return { id, enabled: true, applied: false, error: String(startResult.error) } satisfies UpsertIdentityResult;
+      return { id, enabled: true, applied: true } satisfies UpsertIdentityResult;
+    };
+  }
 
-    deleteFeishuIdentity: async (rawId: string) => {
+  function makeDeleteHandler(def: ChannelDef<any>) {
+    return async (rawId: string) => {
       const id = normalizeIdentityId(rawId);
       if (id === "env") throw new Error("env identity cannot be deleted");
 
       const { config: current } = readConfigFile(config.configPath);
-      const feishu = current.channels?.feishu;
-      const apps = Array.isArray((feishu as any)?.apps) ? (((feishu as any).apps as unknown[]) ?? []) : [];
-      const nextApps: any[] = [];
-      let deleted = false;
-      for (const entry of apps) {
-        if (!entry || typeof entry !== "object") continue;
-        const record = entry as Record<string, unknown>;
-        const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
-        if (entryId === id) { deleted = true; continue; }
-        nextApps.push(entry);
-      }
-      const next: OpenCodeRouterConfigFile = {
-        ...current,
-        channels: { ...current.channels, feishu: { ...(current.channels?.feishu ?? {}), apps: nextApps } },
-      };
-      next.version = next.version ?? 1;
-      writeConfigFile(config.configPath, next);
-      config.configFile = next;
-
-      config.feishuApps.splice(0, config.feishuApps.length, ...config.feishuApps.filter((a) => a.id !== id));
-
-      const key = adapterKey("feishu", id);
-      const existing = adapters.get(key);
-      if (existing) {
-        try { await existing.stop(); } catch (error) {
-          logger.warn({ error, channel: "feishu", identityId: id }, "failed to stop feishu adapter");
-        }
-        adapters.delete(key);
-      }
-      return { id, deleted };
-    },
-
-    // -------------------------------------------------------------------------
-    // Mattermost
-    // -------------------------------------------------------------------------
-    listMattermostIdentities: async () => {
-      return {
-        items: config.mattermostBots.map((bot) => ({
-          id: bot.id,
-          enabled: bot.enabled !== false,
-          running: adapters.has(adapterKey("mattermost", bot.id)),
-        })),
-      };
-    },
-
-    upsertMattermostIdentity: async (input: MattermostIdentityUpsertInput) => {
-      const serverUrl = input.serverUrl?.trim() ?? "";
-      const accessToken = input.accessToken?.trim() ?? "";
-      if (!serverUrl || !accessToken) throw new Error("serverUrl and accessToken are required");
-      const id = normalizeIdentityId(input.id);
-      if (id === "env") throw new Error("identity id 'env' is reserved");
-      const enabled = input.enabled !== false;
-      const directoryInput = typeof input.directory === "string" ? input.directory.trim() : "";
-
-      // Persist to config file.
-      const { config: current } = readConfigFile(config.configPath);
-      const mattermost = current.channels?.mattermost;
-      const bots = Array.isArray((mattermost as any)?.bots) ? (((mattermost as any).bots as unknown[]) ?? []) : [];
-      const nextBots: any[] = [];
-      let found = false;
-      for (const entry of bots) {
-        if (!entry || typeof entry !== "object") continue;
-        const record = entry as Record<string, unknown>;
-        const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
-        if (entryId !== id) {
-          nextBots.push(entry);
-          continue;
-        }
-        found = true;
-        const existingDirectory = typeof record.directory === "string" ? record.directory.trim() : "";
-        const directory = directoryInput || existingDirectory;
-        nextBots.push({ id, serverUrl, accessToken, enabled, ...(directory ? { directory } : {}) });
-      }
-      if (!found) {
-        nextBots.push({ id, serverUrl, accessToken, enabled, ...(directoryInput ? { directory: directoryInput } : {}) });
-      }
-
-      const next: OpenCodeRouterConfigFile = {
-        ...current,
-        channels: {
-          ...current.channels,
-          mattermost: { ...(current.channels?.mattermost ?? {}), enabled: true, bots: nextBots },
-        },
-      };
-      next.version = next.version ?? 1;
-      writeConfigFile(config.configPath, next);
-      config.configFile = next;
-
-      // Update runtime identity list.
-      const existingIdx = config.mattermostBots.findIndex((b) => b.id === id);
-      const runtimeIdentity: MattermostIdentity = {
-        id,
-        serverUrl,
-        accessToken,
-        enabled,
-        ...(directoryInput ? { directory: directoryInput } : existingIdx >= 0 && config.mattermostBots[existingIdx]?.directory ? { directory: config.mattermostBots[existingIdx].directory } : {}),
-      };
-      if (existingIdx >= 0) {
-        config.mattermostBots[existingIdx] = runtimeIdentity;
-      } else {
-        config.mattermostBots.push(runtimeIdentity);
-      }
-
-      // Start/stop adapter.
-      const key = adapterKey("mattermost", id);
-      const existing = adapters.get(key);
-      if (!enabled) {
-        if (existing) {
-          try { await existing.stop(); } catch (error) {
-            logger.warn({ error, channel: "mattermost", identityId: id }, "failed to stop mattermost adapter");
-          }
-          adapters.delete(key);
-        }
-        return { id, enabled: false, applied: true };
-      }
-
-      if (existing) {
-        try { await existing.stop(); } catch (error) {
-          logger.warn({ error, channel: "mattermost", identityId: id }, "failed to stop existing mattermost adapter");
-        }
-        adapters.delete(key);
-      }
-      const base = createMattermostAdapter(runtimeIdentity, config, logger, handleInbound, mediaStore);
-      const adapter = { ...base, key };
-      adapters.set(key, adapter);
-
-      const startResult = await startAdapterBounded(adapter, {
-        timeoutMs: 5_000,
-        onError: (error) => {
-          logger.error({ error, channel: "mattermost", identityId: id }, "mattermost adapter start failed");
-          adapters.delete(key);
-        },
+      const entries = def.configList(current);
+      const nextEntries = entries.filter((e) => {
+        if (!e || typeof e !== "object") return false;
+        return normalizeIdentityId(typeof e.id === "string" ? e.id : "default") !== id;
       });
+      const deleted = nextEntries.length !== entries.length;
 
-      if (startResult.status === "timeout") return { id, enabled: true, applied: false, starting: true };
-      if (startResult.status === "error") return { id, enabled: true, applied: false, error: String(startResult.error) };
-      return { id, enabled: true, applied: true };
-    },
-
-    deleteMattermostIdentity: async (rawId: string) => {
-      const id = normalizeIdentityId(rawId);
-      if (id === "env") throw new Error("env identity cannot be deleted");
-
-      const { config: current } = readConfigFile(config.configPath);
-      const mattermost = current.channels?.mattermost;
-      const bots = Array.isArray((mattermost as any)?.bots) ? (((mattermost as any).bots as unknown[]) ?? []) : [];
-      const nextBots: any[] = [];
-      let deleted = false;
-      for (const entry of bots) {
-        if (!entry || typeof entry !== "object") continue;
-        const record = entry as Record<string, unknown>;
-        const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
-        if (entryId === id) { deleted = true; continue; }
-        nextBots.push(entry);
-      }
-      const next: OpenCodeRouterConfigFile = {
-        ...current,
-        channels: { ...current.channels, mattermost: { ...(current.channels?.mattermost ?? {}), bots: nextBots } },
-      };
+      const next = def.setConfigList(current, nextEntries);
       next.version = next.version ?? 1;
       writeConfigFile(config.configPath, next);
       config.configFile = next;
 
-      config.mattermostBots.splice(0, config.mattermostBots.length, ...config.mattermostBots.filter((b) => b.id !== id));
+      def.setRuntimeList(config, def.runtimeList(config).filter((a: any) => a.id !== id));
 
-      const key = adapterKey("mattermost", id);
+      const key = adapterKey(def.channel, id);
       const existing = adapters.get(key);
       if (existing) {
         try { await existing.stop(); } catch (error) {
-          logger.warn({ error, channel: "mattermost", identityId: id }, "failed to stop mattermost adapter");
+          logger.warn({ error, channel: def.channel, identityId: id }, `failed to stop ${def.channel} adapter`);
         }
         adapters.delete(key);
       }
-      return { id, deleted };
-    },
-  };
+      return { id, deleted } satisfies DeleteIdentityResult;
+    };
+  }
+
+  const handlers: ExtHealthHandlers = {};
+  for (const def of CHANNEL_DEFS) {
+    const cap = channelCap(def);
+    (handlers as any)[`list${cap}Identities`] = makeListHandler(def);
+    (handlers as any)[`upsert${cap}Identity`] = makeUpsertHandler(def);
+    (handlers as any)[`delete${cap}Identity`] = makeDeleteHandler(def);
+  }
+
+  return handlers;
 }
 
 // ---------------------------------------------------------------------------
-// Health HTTP route handler (called from health.ts)
+// Generic: HTTP route handler
 // ---------------------------------------------------------------------------
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -513,7 +560,7 @@ function errorStatus(error: unknown): number {
 }
 
 /**
- * Handle HTTP routes for extended channels.
+ * Handle HTTP routes for all extension channels defined in CHANNEL_DEFS.
  * Returns true if the request was handled, false to fall through to the next handler.
  */
 export async function handleExtChannelRoute(
@@ -523,118 +570,81 @@ export async function handleExtChannelRoute(
   res: http.ServerResponse,
   handlers: ExtHealthHandlers,
 ): Promise<boolean> {
+  for (const def of CHANNEL_DEFS) {
+    const { channel } = def;
+    const cap = channel.charAt(0).toUpperCase() + channel.slice(1);
+    const listKey = `list${cap}Identities` as keyof ExtHealthHandlers;
+    const upsertKey = `upsert${cap}Identity` as keyof ExtHealthHandlers;
+    const deleteKey = `delete${cap}Identity` as keyof ExtHealthHandlers;
 
-  // GET /identities/feishu
-  if (pathname === "/identities/feishu" && method === "GET") {
-    if (!handlers.listFeishuIdentities) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    try {
-      const result = await handlers.listFeishuIdentities();
-      jsonResponse(res, 200, { ok: true, ...result });
-    } catch (error) {
-      jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
+    // GET /identities/<channel>
+    if (pathname === `/identities/${channel}` && method === "GET") {
+      if (!handlers[listKey]) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
+      try {
+        const result = await (handlers[listKey] as any)();
+        jsonResponse(res, 200, { ok: true, ...result });
+      } catch (error) {
+        jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
+      }
+      return true;
     }
-    return true;
-  }
 
-  // POST /identities/feishu
-  if (pathname === "/identities/feishu" && method === "POST") {
-    if (!handlers.upsertFeishuIdentity) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    try {
-      const raw = await readBody(req);
-      const payload = JSON.parse(raw || "{}");
-      const appId = typeof payload.appId === "string" ? payload.appId.trim() : "";
-      const appSecret = typeof payload.appSecret === "string" ? payload.appSecret.trim() : "";
-      if (!appId || !appSecret) { jsonResponse(res, 400, { ok: false, error: "appId and appSecret are required" }); return true; }
-      const id = typeof payload.id === "string" ? payload.id.trim() : undefined;
-      const directory = typeof payload.directory === "string" ? payload.directory.trim() : undefined;
-      const domain = typeof payload.domain === "string" ? payload.domain.trim() : undefined;
-      const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
-      const result = await handlers.upsertFeishuIdentity({
-        ...(id ? { id } : {}),
-        appId,
-        appSecret,
-        ...(enabled === undefined ? {} : { enabled }),
-        ...(directory ? { directory } : {}),
-        ...(domain === "lark" ? { domain: "lark" } : domain === "feishu" ? { domain: "feishu" } : {}),
-      });
-      jsonResponse(res, 200, { ok: true, feishu: result });
-    } catch (error) {
-      jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
-    }
-    return true;
-  }
+    // POST /identities/<channel>
+    if (pathname === `/identities/${channel}` && method === "POST") {
+      if (!handlers[upsertKey]) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
+      try {
+        const raw = await readBody(req);
+        const payload = JSON.parse(raw || "{}");
 
-  // DELETE /identities/feishu/:id
-  if (pathname.startsWith("/identities/feishu/") && method === "DELETE") {
-    if (!handlers.deleteFeishuIdentity) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    const id = pathname.slice("/identities/feishu/".length).trim();
-    if (!id) { jsonResponse(res, 400, { ok: false, error: "id is required" }); return true; }
-    try {
-      const result = await handlers.deleteFeishuIdentity(id);
-      jsonResponse(res, 200, { ok: true, feishu: result });
-    } catch (error) {
-      jsonResponse(res, 500, { ok: false, error: String(error) });
-    }
-    return true;
-  }
+        // Validate required fields
+        for (const [field, label] of def.requiredFields) {
+          const val = typeof payload[field] === "string" ? String(payload[field]).trim() : "";
+          if (!val) {
+            jsonResponse(res, 400, { ok: false, error: `${label} is required` });
+            return true;
+          }
+        }
 
-  // GET /identities/mattermost
-  if (pathname === "/identities/mattermost" && method === "GET") {
-    if (!handlers.listMattermostIdentities) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    try {
-      const result = await handlers.listMattermostIdentities();
-      jsonResponse(res, 200, { ok: true, ...result });
-    } catch (error) {
-      jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
-    }
-    return true;
-  }
+        const id = typeof payload.id === "string" ? payload.id.trim() : undefined;
+        const directory = typeof payload.directory === "string" ? payload.directory.trim() : undefined;
+        const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
 
-  // POST /identities/mattermost
-  if (pathname === "/identities/mattermost" && method === "POST") {
-    if (!handlers.upsertMattermostIdentity) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    try {
-      const raw = await readBody(req);
-      const payload = JSON.parse(raw || "{}");
-      const serverUrl = typeof payload.serverUrl === "string" ? payload.serverUrl.trim() : "";
-      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken.trim() : "";
-      if (!serverUrl || !accessToken) { jsonResponse(res, 400, { ok: false, error: "serverUrl and accessToken are required" }); return true; }
-      const id = typeof payload.id === "string" ? payload.id.trim() : undefined;
-      const directory = typeof payload.directory === "string" ? payload.directory.trim() : undefined;
-      const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
-      const result = await handlers.upsertMattermostIdentity({
-        ...(id ? { id } : {}),
-        serverUrl,
-        accessToken,
-        ...(enabled === undefined ? {} : { enabled }),
-        ...(directory ? { directory } : {}),
-      });
-      jsonResponse(res, 200, { ok: true, mattermost: result });
-    } catch (error) {
-      jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
-    }
-    return true;
-  }
+        const upsertPayload: Record<string, unknown> = {
+          ...payload,
+          ...(id ? { id } : {}),
+          ...(enabled !== undefined ? { enabled } : {}),
+          ...(directory ? { directory } : {}),
+        };
 
-  // DELETE /identities/mattermost/:id
-  if (pathname.startsWith("/identities/mattermost/") && method === "DELETE") {
-    if (!handlers.deleteMattermostIdentity) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
-    const id = pathname.slice("/identities/mattermost/".length).trim();
-    if (!id) { jsonResponse(res, 400, { ok: false, error: "id is required" }); return true; }
-    try {
-      const result = await handlers.deleteMattermostIdentity(id);
-      jsonResponse(res, 200, { ok: true, mattermost: result });
-    } catch (error) {
-      jsonResponse(res, 500, { ok: false, error: String(error) });
+        const result = await (handlers[upsertKey] as any)(upsertPayload);
+        jsonResponse(res, 200, { ok: true, [channel]: result });
+      } catch (error) {
+        jsonResponse(res, errorStatus(error), { ok: false, error: String(error instanceof Error ? error.message : error) });
+      }
+      return true;
     }
-    return true;
+
+    // DELETE /identities/<channel>/:id
+    const deletePrefix = `/identities/${channel}/`;
+    if (pathname.startsWith(deletePrefix) && method === "DELETE") {
+      if (!handlers[deleteKey]) { jsonResponse(res, 404, { ok: false, error: "Not supported" }); return true; }
+      const identityId = pathname.slice(deletePrefix.length).trim();
+      if (!identityId) { jsonResponse(res, 400, { ok: false, error: "id is required" }); return true; }
+      try {
+        const result = await (handlers[deleteKey] as any)(identityId);
+        jsonResponse(res, 200, { ok: true, [channel]: result });
+      } catch (error) {
+        jsonResponse(res, 500, { ok: false, error: String(error) });
+      }
+      return true;
+    }
   }
 
   return false;
 }
 
 // ---------------------------------------------------------------------------
-// CLI command registration (called from cli.ts)
+// Generic: CLI command registration
 // ---------------------------------------------------------------------------
 
 export function registerExtCommands(
@@ -655,163 +665,109 @@ export function registerExtCommands(
     return next;
   };
 
-  // ---- Feishu commands ----
-  const feishu = program.command("feishu").description("Feishu identities");
+  for (const def of CHANNEL_DEFS) {
+    const { channel } = def;
 
-  feishu
-    .command("list")
-    .description("List Feishu app identities")
-    .action(() => {
+    // Parent command
+    const parent = program.command(channel).description(`${channel} identities`);
+
+    // list
+    parent
+      .command("list")
+      .description(`List ${channel} identities`)
+      .action(() => {
+        const useJson = program.opts().json;
+        const config = loadConfig(process.env, { requireOpencode: false });
+        const items = def.runtimeList(config).map((a: any) => ({ id: a.id, enabled: a.enabled !== false }));
+        if (useJson) outputJson({ items });
+        else for (const item of items) console.log(`${item.id} ${item.enabled ? "enabled" : "disabled"}`);
+      });
+
+    // add — with dynamically declared required/optional options
+    const requiredOpts = def.cliAddOptions.filter((o) => o.required);
+    const optionalOpts = def.cliAddOptions.filter((o) => !o.required);
+
+    // Commander only supports `requiredOption` during command creation.
+    // Workaround: create the command with a dummy action, then overwrite.
+    let addActionSet = false;
+    const addCmd = parent
+      .command("add")
+      .option("--id <id>", "Identity id (default: default)")
+      .option("--disabled", "Add identity but disable it", false)
+      .option("--directory <directory>", "Optional default workspace directory")
+      .description(`Add or update a ${channel} identity`);
+
+    // Add required options by calling option() and then validating manually
+    for (const opt of requiredOpts) {
+      addCmd.option(opt.flag, opt.desc);
+    }
+
+    // Add optional options
+    for (const opt of optionalOpts) {
+      addCmd.option(opt.flag, opt.desc);
+    }
+
+    addCmd.action((opts: Record<string, unknown>) => {
       const useJson = program.opts().json;
       const config = loadConfig(process.env, { requireOpencode: false });
-      const items = config.feishuApps.map((a) => ({ id: a.id, enabled: a.enabled !== false }));
-      if (useJson) outputJson({ items });
-      else for (const item of items) console.log(`${item.id} ${item.enabled ? "enabled" : "disabled"}`);
-    });
-
-  feishu
-    .command("add")
-    .requiredOption("--app-id <appId>", "Feishu App ID")
-    .requiredOption("--app-secret <appSecret>", "Feishu App Secret")
-    .option("--id <id>", "Identity id (default: default)")
-    .option("--domain <domain>", "feishu or lark", "feishu")
-    .option("--disabled", "Add identity but disable it", false)
-    .description("Add or update a Feishu app identity")
-    .action((opts: { appId: string; appSecret: string; id?: string; domain?: string; disabled?: boolean }) => {
-      const useJson = program.opts().json;
-      const config = loadConfig(process.env, { requireOpencode: false });
-      const id = normalizeIdentityId(opts.id);
+      const id = normalizeIdentityId(typeof opts.id === "string" ? opts.id : undefined);
       const enabled = !opts.disabled;
-      const domain: "feishu" | "lark" = opts.domain === "lark" ? "lark" : "feishu";
-      updateConfig(config.configPath, (cfg) => upsertFeishuApp(cfg, { id, appId: opts.appId.trim(), appSecret: opts.appSecret.trim(), enabled, domain }, normalizeIdentityId));
+
+      // Validate required fields manually
+      const missing: string[] = [];
+      for (const opt of requiredOpts) {
+        const key = opt.flag.replace(/^--/, "").replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+        const val = typeof opts[key] === "string" ? String(opts[key]).trim() : "";
+        if (!val) missing.push(opt.flag);
+      }
+      if (missing.length > 0) {
+        console.error(`Missing required options: ${missing.join(", ")}`);
+        process.exit(1);
+      }
+
+      // Build identity config entry
+      const entry: Record<string, unknown> = { id, enabled };
+      for (const opt of [...requiredOpts, ...optionalOpts]) {
+        const key = opt.flag.replace(/^--/, "").replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+        const val = opts[key];
+        if (typeof val === "string" && val.trim()) {
+          entry[key] = val.trim();
+        }
+      }
+      if (typeof opts.directory === "string" && opts.directory.trim()) {
+        entry.directory = opts.directory.trim();
+      }
+
+      const identity = def.buildIdentity(entry, id);
+      const existingEntries = def.configList(config.configFile);
+      const filtered = existingEntries.filter(
+        (e: Record<string, unknown>) => normalizeIdentityId(typeof e.id === "string" ? e.id : undefined) !== id,
+      );
+      filtered.push(identity as Record<string, unknown>);
+
+      updateConfig(config.configPath, (cfg) => def.setConfigList(cfg, filtered));
       if (useJson) outputJson({ success: true, id, enabled });
-      else console.log(`Saved Feishu identity: ${id}`);
+      else console.log(`Saved ${channel} identity: ${id}`);
     });
 
-  feishu
-    .command("remove")
-    .argument("<id>", "Identity id")
-    .description("Remove a Feishu identity")
-    .action((idRaw: string) => {
-      const useJson = program.opts().json;
-      const config = loadConfig(process.env, { requireOpencode: false });
-      const { next, deleted } = deleteFeishuApp(_readConfigFile(config.configPath).config, idRaw, normalizeIdentityId);
-      _writeConfigFile(config.configPath, next);
-      if (useJson) outputJson({ success: deleted, id: normalizeIdentityId(idRaw) });
-      else console.log(deleted ? `Removed Feishu identity: ${normalizeIdentityId(idRaw)}` : "Identity not found.");
-      process.exit(deleted ? 0 : 1);
-    });
-
-  // ---- Mattermost commands ----
-  const mattermost = program.command("mattermost").description("Mattermost identities");
-
-  mattermost
-    .command("list")
-    .description("List Mattermost bot identities")
-    .action(() => {
-      const useJson = program.opts().json;
-      const config = loadConfig(process.env, { requireOpencode: false });
-      const items = config.mattermostBots.map((b) => ({ id: b.id, enabled: b.enabled !== false }));
-      if (useJson) outputJson({ items });
-      else for (const item of items) console.log(`${item.id} ${item.enabled ? "enabled" : "disabled"}`);
-    });
-
-  mattermost
-    .command("add")
-    .requiredOption("--server-url <serverUrl>", "Mattermost server URL")
-    .requiredOption("--access-token <accessToken>", "Bot access token")
-    .option("--id <id>", "Identity id (default: default)")
-    .option("--disabled", "Add identity but disable it", false)
-    .description("Add or update a Mattermost bot identity")
-    .action((opts: { serverUrl: string; accessToken: string; id?: string; disabled?: boolean }) => {
-      const useJson = program.opts().json;
-      const config = loadConfig(process.env, { requireOpencode: false });
-      const id = normalizeIdentityId(opts.id);
-      const enabled = !opts.disabled;
-      updateConfig(config.configPath, (cfg) => upsertMattermostBot(cfg, { id, serverUrl: opts.serverUrl.trim(), accessToken: opts.accessToken.trim(), enabled }, normalizeIdentityId));
-      if (useJson) outputJson({ success: true, id, enabled });
-      else console.log(`Saved Mattermost identity: ${id}`);
-    });
-
-  mattermost
-    .command("remove")
-    .argument("<id>", "Identity id")
-    .description("Remove a Mattermost identity")
-    .action((idRaw: string) => {
-      const useJson = program.opts().json;
-      const config = loadConfig(process.env, { requireOpencode: false });
-      const { next, deleted } = deleteMattermostBot(_readConfigFile(config.configPath).config, idRaw, normalizeIdentityId);
-      _writeConfigFile(config.configPath, next);
-      if (useJson) outputJson({ success: deleted, id: normalizeIdentityId(idRaw) });
-      else console.log(deleted ? `Removed Mattermost identity: ${normalizeIdentityId(idRaw)}` : "Identity not found.");
-      process.exit(deleted ? 0 : 1);
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Config file helpers (used by CLI)
-// ---------------------------------------------------------------------------
-
-function upsertFeishuApp(
-  cfg: OpenCodeRouterConfigFile,
-  identity: FeishuIdentity,
-  normalizeIdentityId: (v: string | undefined) => string,
-): OpenCodeRouterConfigFile {
-  const next = { ...cfg };
-  next.channels = next.channels ?? {};
-  const existing = next.channels.feishu ?? {};
-  const apps = Array.isArray(existing.apps) ? existing.apps.slice() : [];
-  const id = normalizeIdentityId(identity.id);
-  const filtered = apps.filter((a) => normalizeIdentityId(a.id) !== id);
-  filtered.push({ id, appId: identity.appId, appSecret: identity.appSecret, enabled: identity.enabled !== false, domain: identity.domain ?? "feishu" });
-  next.channels.feishu = { ...existing, enabled: true, apps: filtered };
-  return next;
-}
-
-function deleteFeishuApp(
-  cfg: OpenCodeRouterConfigFile,
-  idRaw: string,
-  normalizeIdentityId: (v: string | undefined) => string,
-): { next: OpenCodeRouterConfigFile; deleted: boolean } {
-  const id = normalizeIdentityId(idRaw);
-  const next = { ...cfg };
-  next.channels = next.channels ?? {};
-  const existing = next.channels.feishu ?? {};
-  const apps = Array.isArray(existing.apps) ? existing.apps.slice() : [];
-  const filtered = apps.filter((a) => normalizeIdentityId(a.id) !== id);
-  const deleted = filtered.length !== apps.length;
-  next.channels.feishu = { ...existing, apps: filtered };
-  return { next, deleted };
-}
-
-function upsertMattermostBot(
-  cfg: OpenCodeRouterConfigFile,
-  identity: MattermostIdentity,
-  normalizeIdentityId: (v: string | undefined) => string,
-): OpenCodeRouterConfigFile {
-  const next = { ...cfg };
-  next.channels = next.channels ?? {};
-  const existing = next.channels.mattermost ?? {};
-  const bots = Array.isArray(existing.bots) ? existing.bots.slice() : [];
-  const id = normalizeIdentityId(identity.id);
-  const filtered = bots.filter((b) => normalizeIdentityId(b.id) !== id);
-  filtered.push({ id, serverUrl: identity.serverUrl, accessToken: identity.accessToken, enabled: identity.enabled !== false });
-  next.channels.mattermost = { ...existing, enabled: true, bots: filtered };
-  return next;
-}
-
-function deleteMattermostBot(
-  cfg: OpenCodeRouterConfigFile,
-  idRaw: string,
-  normalizeIdentityId: (v: string | undefined) => string,
-): { next: OpenCodeRouterConfigFile; deleted: boolean } {
-  const id = normalizeIdentityId(idRaw);
-  const next = { ...cfg };
-  next.channels = next.channels ?? {};
-  const existing = next.channels.mattermost ?? {};
-  const bots = Array.isArray(existing.bots) ? existing.bots.slice() : [];
-  const filtered = bots.filter((b) => normalizeIdentityId(b.id) !== id);
-  const deleted = filtered.length !== bots.length;
-  next.channels.mattermost = { ...existing, bots: filtered };
-  return { next, deleted };
+    // remove
+    parent
+      .command("remove")
+      .argument("<id>", "Identity id")
+      .description(`Remove a ${channel} identity`)
+      .action((idRaw: string) => {
+        const useJson = program.opts().json;
+        const config = loadConfig(process.env, { requireOpencode: false });
+        const id = normalizeIdentityId(idRaw);
+        const entries = def.configList(config.configFile);
+        const next = entries.filter(
+          (e: Record<string, unknown>) => normalizeIdentityId(typeof e.id === "string" ? e.id : undefined) !== id,
+        );
+        const deleted = next.length !== entries.length;
+        updateConfig(config.configPath, (cfg) => def.setConfigList(cfg, next));
+        if (useJson) outputJson({ success: deleted, id });
+        else console.log(deleted ? `Removed ${channel} identity: ${id}` : "Identity not found.");
+        process.exit(deleted ? 0 : 1);
+      });
+  }
 }
