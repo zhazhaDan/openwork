@@ -24,6 +24,7 @@ export type FeishuOutboundMeta = {
   kind?: "reply" | "system" | "tool";
   model?: string;
   agent?: string;
+  replyToMessageId?: string;
 };
 
 export type FeishuAdapter = {
@@ -38,6 +39,7 @@ export type FeishuAdapter = {
   ): Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendTyping?(peerId: string): Promise<void>;
+  markComplete?(messageId: string): Promise<void>;
   getBotName?(): string | null;
 };
 
@@ -89,15 +91,46 @@ export function createFeishuAdapter(
   // Doc: https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/create
   // ---------------------------------------------------------------------------
 
+  // 记录 inbound message 的 "in-progress" reaction_id，完成时用它撤掉
+  const inProgressReactions = new Map<string, string>();
+
   const markRead = async (messageId: string) => {
     if (!messageId) return;
     try {
-      await (client.im.messageReaction.create as any)({
+      const res: any = await (client.im.messageReaction.create as any)({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: "OK" } },
       });
+      const reactionId =
+        res?.data?.reaction_id ?? res?.reaction_id ?? undefined;
+      if (typeof reactionId === "string" && reactionId) {
+        inProgressReactions.set(messageId, reactionId);
+      }
     } catch (error) {
       log.warn({ error, messageId }, "feishu markRead reaction failed");
+    }
+  };
+
+  const markComplete = async (messageId: string) => {
+    if (!messageId) return;
+    const reactionId = inProgressReactions.get(messageId);
+    inProgressReactions.delete(messageId);
+    if (reactionId) {
+      try {
+        await (client.im.messageReaction.delete as any)({
+          path: { message_id: messageId, reaction_id: reactionId },
+        });
+      } catch (error) {
+        log.warn({ error, messageId, reactionId }, "feishu markComplete delete failed");
+      }
+    }
+    try {
+      await (client.im.messageReaction.create as any)({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: "DONE" } },
+      });
+    } catch (error) {
+      log.warn({ error, messageId }, "feishu markComplete add failed");
     }
   };
 
@@ -164,6 +197,15 @@ export function createFeishuAdapter(
 
       if (!chatId) return;
 
+      log.info(
+        {
+          chatId,
+          msgType,
+          contentPreview: contentStr.slice(0, 300),
+        },
+        "feishu raw message",
+      );
+
       // Ignore own messages.
       if (senderId && botOpenId && senderId === botOpenId) return;
 
@@ -217,6 +259,7 @@ export function createFeishuAdapter(
       }
 
       // Handle image attachments.
+      log.info({ chatId, imageKeysCount: imageKeys.length, hasMediaStore: !!mediaStore }, "feishu image processing start");
       for (const imageKey of imageKeys) {
         if (mediaStore) {
           try {
@@ -224,13 +267,27 @@ export function createFeishuAdapter(
               path: { message_id: message.message_id, file_key: imageKey },
               params: { type: "image" },
             });
-            if (imageRes?.data) {
+            // SDK 返回 { writeFile, getReadableStream }，需要主动 consume stream 拿 buffer
+            let buffer: Buffer | undefined;
+            if (typeof imageRes?.getReadableStream === "function") {
+              const stream = imageRes.getReadableStream();
+              const chunks: Buffer[] = [];
+              for await (const chunk of stream as AsyncIterable<unknown>) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer));
+              }
+              buffer = Buffer.concat(chunks);
+            } else if (imageRes?.data) {
+              // 兼容老版本 SDK 直接给 buffer 的情况
+              buffer = Buffer.isBuffer(imageRes.data) ? imageRes.data : Buffer.from(imageRes.data);
+            }
+            log.info({ imageKey, downloadedBytes: buffer?.byteLength ?? 0 }, "feishu image download");
+            if (buffer && buffer.byteLength > 0) {
               const stored = await mediaStore.saveInboundBuffer({
                 channel: "feishu",
                 identityId: identity.id,
                 peerId: chatId,
                 kind: "image",
-                buffer: Buffer.isBuffer(imageRes.data) ? imageRes.data : Buffer.from(imageRes.data),
+                buffer,
                 filename: `${imageKey}.png`,
                 mimeType: "image/png",
               });
@@ -250,6 +307,7 @@ export function createFeishuAdapter(
               });
             }
           } catch (error) {
+            log.warn({ imageKey, error }, "feishu image download failed");
             const classified = classifyDeliveryError(error);
             parts.push({
               type: "media",
@@ -287,6 +345,7 @@ export function createFeishuAdapter(
         parts,
         raw: event,
         fromMe: false,
+        ...(messageId ? { messageId } : {}),
       });
     } catch (error) {
       log.error({ error }, "feishu inbound handler failed");
@@ -417,6 +476,18 @@ export function createFeishuAdapter(
     const meta = message.meta;
     const renderAsCard = meta?.kind === "reply" || meta?.kind === "tool";
 
+    // 统一发送：当 meta.replyToMessageId 存在时走 reply API，否则 create
+    const sendOne = (msgType: string, content: string) =>
+      meta?.replyToMessageId
+        ? (client.im.message.reply as any)({
+            path: { message_id: meta.replyToMessageId },
+            data: { msg_type: msgType, content },
+          })
+        : client.im.message.create({
+            params: { receive_id_type: receiveIdType },
+            data: { receive_id: chatId, msg_type: msgType, content },
+          });
+
     for (let index = 0; index < message.parts.length; index += 1) {
       const part = message.parts[index];
       try {
@@ -430,15 +501,7 @@ export function createFeishuAdapter(
               const card = buildReplyCard(chunk, chunkMeta);
               await withDeliveryRetry(
                 "feishu.sendCard",
-                () =>
-                  client.im.message.create({
-                    params: { receive_id_type: receiveIdType },
-                    data: {
-                      receive_id: chatId,
-                      msg_type: "interactive",
-                      content: JSON.stringify(card),
-                    },
-                  }),
+                () => sendOne("interactive", JSON.stringify(card)),
                 { logger: log },
               );
             }
@@ -447,15 +510,7 @@ export function createFeishuAdapter(
             for (const chunk of chunks) {
               await withDeliveryRetry(
                 "feishu.sendMessage",
-                () =>
-                  client.im.message.create({
-                    params: { receive_id_type: receiveIdType },
-                    data: {
-                      receive_id: chatId,
-                      msg_type: "text",
-                      content: JSON.stringify({ text: chunk }),
-                    },
-                  }),
+                () => sendOne("text", JSON.stringify({ text: chunk })),
                 { logger: log },
               );
             }
@@ -489,15 +544,7 @@ export function createFeishuAdapter(
             if (imageKey) {
               await withDeliveryRetry(
                 "feishu.sendImage",
-                () =>
-                  client.im.message.create({
-                    params: { receive_id_type: receiveIdType },
-                    data: {
-                      receive_id: chatId,
-                      msg_type: "image",
-                      content: JSON.stringify({ image_key: imageKey }),
-                    },
-                  }),
+                () => sendOne("image", JSON.stringify({ image_key: imageKey })),
                 { logger: log },
               );
             }
@@ -522,15 +569,7 @@ export function createFeishuAdapter(
             if (fileKey) {
               await withDeliveryRetry(
                 "feishu.sendFile",
-                () =>
-                  client.im.message.create({
-                    params: { receive_id_type: receiveIdType },
-                    data: {
-                      receive_id: chatId,
-                      msg_type: "file",
-                      content: JSON.stringify({ file_key: fileKey }),
-                    },
-                  }),
+                () => sendOne("file", JSON.stringify({ file_key: fileKey })),
                 { logger: log },
               );
             }
@@ -540,15 +579,7 @@ export function createFeishuAdapter(
           if (part.caption?.trim()) {
             await withDeliveryRetry(
               "feishu.sendCaption",
-              () =>
-                client.im.message.create({
-                  params: { receive_id_type: receiveIdType },
-                  data: {
-                    receive_id: chatId,
-                    msg_type: "text",
-                    content: JSON.stringify({ text: part.caption!.trim() }),
-                  },
-                }),
+              () => sendOne("text", JSON.stringify({ text: part.caption!.trim() })),
               { logger: log },
             );
           }
@@ -669,6 +700,9 @@ export function createFeishuAdapter(
     async sendTyping(_peerId: string) {
       // Feishu does not have a native typing indicator API.
       log.debug("feishu sendTyping: no-op (not supported)");
+    },
+    async markComplete(messageId: string) {
+      await markComplete(messageId);
     },
     getBotName() {
       return botName;

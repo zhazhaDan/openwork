@@ -27,10 +27,11 @@ type Adapter = {
   maxTextLength: number;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: { kind?: OutboundKind } }) => Promise<MessageDeliveryResult>;
+  sendMessage?: (peerId: string, message: { parts: OutboundMessagePart[]; meta?: { kind?: OutboundKind; replyToMessageId?: string } }) => Promise<MessageDeliveryResult>;
   sendText(peerId: string, text: string): Promise<void>;
   sendFile?: (peerId: string, filePath: string, caption?: string) => Promise<void>;
   sendTyping?: (peerId: string) => Promise<void>;
+  markComplete?: (messageId: string) => Promise<void>;
 };
 
 type AdapterStartResult =
@@ -102,6 +103,7 @@ type InboundMessage = {
   parts?: InboundMessagePart[];
   raw: unknown;
   fromMe?: boolean;
+  messageId?: string;
 };
 
 type SendTargetDelivery = {
@@ -130,6 +132,7 @@ type RunState = {
   seenToolStates: Map<string, string>;
   thinkingLabel?: string;
   thinkingActive?: boolean;
+  inboundMessageId?: string;
 };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -668,7 +671,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     parts: OutboundMessagePart[],
-    options: { kind?: OutboundKind; display?: boolean } = {},
+    options: { kind?: OutboundKind; display?: boolean; replyToMessageId?: string } = {},
   ): Promise<MessageDeliveryResult> => {
     const adapter = adapters.get(adapterKey(channel, identityId));
     if (!adapter) {
@@ -701,7 +704,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     if (adapter.sendMessage) {
       try {
-        return await adapter.sendMessage(peerId, { parts, meta: { kind } });
+        return await adapter.sendMessage(peerId, {
+          parts,
+          meta: { kind, ...(options.replyToMessageId ? { replyToMessageId: options.replyToMessageId } : {}) },
+        });
       } catch (error) {
         const classified = classifyDeliveryError(error);
         return {
@@ -1723,7 +1729,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
             if (output) message += `\n${output}`;
           }
 
-          await sendText(run.channel, run.identityId, run.peerId, message, { kind: "tool" });
+          await sendText(run.channel, run.identityId, run.peerId, message, {
+            kind: "tool",
+            ...(run.inboundMessageId ? { replyToMessageId: run.inboundMessageId } : {}),
+          });
         }
 
         if (event.type === "permission.asked") {
@@ -1758,7 +1767,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     identityId: string,
     peerId: string,
     text: string,
-    options: { kind?: OutboundKind; display?: boolean } = {},
+    options: { kind?: OutboundKind; display?: boolean; replyToMessageId?: string } = {},
   ) {
     const parts: OutboundMessagePart[] =
       text.startsWith("FILE:") && text.substring(5).trim()
@@ -2032,6 +2041,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         peerKey,
         toolUpdatesEnabled: config.toolUpdatesEnabled,
         seenToolStates: new Map(),
+        ...(inbound.messageId ? { inboundMessageId: inbound.messageId } : {}),
       };
       activeRuns.set(key, runState);
       reportThinking(runState);
@@ -2050,6 +2060,20 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         const promptText = attachmentSummary.length
           ? [incomingText, "", "[attachments]", ...attachmentSummary].join("\n")
           : incomingText;
+
+        // 把已下载的 media 附件作为 file part 一起发给 OpenCode（文本描述之外再带文件实体）
+        const fileParts: Array<{ type: "file"; mime: string; filename?: string; url: string }> = [];
+        for (const part of inbound.parts ?? []) {
+          if (part.type !== "media") continue;
+          const media = part.media;
+          if (media.status !== "ready" || !media.filePath) continue;
+          fileParts.push({
+            type: "file",
+            mime: media.mimeType || "application/octet-stream",
+            ...(media.filename ? { filename: media.filename } : {}),
+            url: `file://${media.filePath}`,
+          });
+        }
         logger.debug(
           {
             sessionID,
@@ -2096,7 +2120,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           const response = await getClient(boundDirectory).session.prompt({
             sessionID,
             directory: boundDirectory,
-            parts: [{ type: "text", text: promptText }],
+            parts: [{ type: "text", text: promptText }, ...fileParts],
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(effectiveAgent ? { agent: effectiveAgent } : {}),
           });
@@ -2116,7 +2140,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
         if (reply) {
           logger.debug({ sessionID, replyLength: reply.length }, "reply built");
-          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
+          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, {
+            kind: "reply",
+            ...(runState.inboundMessageId ? { replyToMessageId: runState.inboundMessageId } : {}),
+          });
         } else {
           logger.warn(
             { sessionID, partTypes: parts.map((part) => part.type), ignoredCount: parts.filter((part) => part.ignored).length },
@@ -2176,6 +2203,14 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         stopTyping(key);
         reportDone(runState);
         activeRuns.delete(key);
+        if (runState.inboundMessageId) {
+          const adapter = adapters.get(runState.adapterKey);
+          if (adapter?.markComplete) {
+            void adapter.markComplete(runState.inboundMessageId).catch((error) => {
+              logger.warn({ error, messageId: runState.inboundMessageId }, "markComplete failed");
+            });
+          }
+        }
       }
     });
   }
