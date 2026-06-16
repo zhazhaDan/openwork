@@ -21,6 +21,7 @@ import type {
   EventMessageWith,
   EnterChatEvent,
   DisconnectedEventData,
+  TemplateCard,
 } from "@wecom/aibot-node-sdk";
 
 import type { Config, WeComBotIdentity } from "./config.js";
@@ -60,6 +61,12 @@ export type WeComBotOutboundMeta = {
   replyFrame?: WsFrameHeaders;
   /** finish 标志，仅在 streamId 提供时有效；默认 true */
   finish?: boolean;
+  /**
+   * 企微模板卡片对象。提供时在所有 parts 发送后附加发送卡片。
+   * 支持文本卡片、图文展示、关键数据、投票选择、多项选择等类型。
+   * 结构参考：https://developer.work.weixin.qq.com/document/path/101463#模板卡片消息
+   */
+  templateCard?: TemplateCard;
 };
 
 export type WeComBotAdapter = {
@@ -175,6 +182,118 @@ export function createWeComBotAdapter(
       const parts: InboundMessagePart[] = [];
       if (text) parts.push({ type: "text", text });
 
+      // 处理媒体附件（图片/文件/语音/视频/混排里的图片）
+      const mediaTargets: Array<{
+        url: string;
+        aeskey?: string;
+        kind: "image" | "file" | "audio";
+        providerFileId: string;
+      }> = [];
+
+      if (body.msgtype === MessageType.Image) {
+        const img = (body as any).image;
+        if (img?.url) {
+          mediaTargets.push({
+            url: img.url,
+            aeskey: img.aeskey,
+            kind: "image",
+            providerFileId: `wecom-aibot-image-${frame.headers.req_id}`,
+          });
+        }
+      } else if (body.msgtype === MessageType.File) {
+        const f = (body as any).file;
+        if (f?.url) {
+          mediaTargets.push({
+            url: f.url,
+            aeskey: f.aeskey,
+            kind: "file",
+            providerFileId: `wecom-aibot-file-${frame.headers.req_id}`,
+          });
+        }
+      } else if (body.msgtype === MessageType.Voice) {
+        // 语音文本已通过 extractText 提取；这里再附带原始音频文件供 Agent 处理
+        const v = (body as any).voice;
+        if (v?.url) {
+          mediaTargets.push({
+            url: v.url,
+            aeskey: v.aeskey,
+            kind: "audio",
+            providerFileId: `wecom-aibot-voice-${frame.headers.req_id}`,
+          });
+        }
+      } else if (body.msgtype === MessageType.Mixed) {
+        const items = (body as any).mixed?.msg_item ?? [];
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          if (it.msgtype === "image" && it.image?.url) {
+            mediaTargets.push({
+              url: it.image.url,
+              aeskey: it.image.aeskey,
+              kind: "image",
+              providerFileId: `wecom-aibot-mixed-${frame.headers.req_id}-${i}`,
+            });
+          }
+        }
+      }
+
+      // 下载并入库到 mediaStore（若提供）
+      if (mediaTargets.length > 0 && _mediaStore && wsClient) {
+        for (const target of mediaTargets) {
+          try {
+            const { buffer, filename } = await wsClient.downloadFile(target.url, target.aeskey);
+            const stored = await _mediaStore.saveInboundBuffer({
+              channel: "wecom-aibot",
+              identityId: identity.id,
+              peerId,
+              kind: target.kind,
+              buffer,
+              filename: filename ?? `${target.providerFileId}.bin`,
+              mimeType:
+                target.kind === "image"
+                  ? "image/png"
+                  : target.kind === "audio"
+                    ? "audio/amr"
+                    : "application/octet-stream",
+            });
+            parts.push({
+              type: "media",
+              media: {
+                id: target.providerFileId,
+                kind: target.kind,
+                source: "wecom-aibot",
+                status: "ready",
+                filePath: stored.filePath,
+                filename: stored.filename,
+                mimeType: stored.mimeType,
+                sizeBytes: stored.sizeBytes,
+                providerFileId: target.providerFileId,
+              },
+            });
+            log.debug(
+              { providerFileId: target.providerFileId, kind: target.kind, sizeBytes: stored.sizeBytes },
+              "wecom-aibot 入站媒体已保存",
+            );
+          } catch (error) {
+            const classified = classifyDeliveryError(error);
+            log.warn(
+              { error, providerFileId: target.providerFileId, code: classified.code },
+              "wecom-aibot 入站媒体下载失败",
+            );
+            parts.push({
+              type: "media",
+              media: {
+                id: target.providerFileId,
+                kind: target.kind,
+                source: "wecom-aibot",
+                status: "failed",
+                providerFileId: target.providerFileId,
+                error: `${classified.code}: ${classified.message}`,
+              },
+            });
+          }
+        }
+      }
+
       // 群聊只在 @ 机器人时才会触发，本身就该响应；单聊全部响应
       if (parts.length === 0) {
         log.debug({ msgtype: body.msgtype, peerId }, "wecom-aibot 不支持的入站消息类型，已跳过");
@@ -182,7 +301,13 @@ export function createWeComBotAdapter(
       }
 
       log.info(
-        { msgtype: body.msgtype, peerId, chattype: body.chattype, preview: text.slice(0, 120) },
+        {
+          msgtype: body.msgtype,
+          peerId,
+          chattype: body.chattype,
+          preview: text.slice(0, 120),
+          mediaCount: mediaTargets.length,
+        },
         "wecom-aibot 收到消息",
       );
 
@@ -221,6 +346,40 @@ export function createWeComBotAdapter(
 
   const handleDisconnected = (frame: WsFrame<EventMessageWith<DisconnectedEventData>>) => {
     log.warn({ reqId: frame.headers.req_id }, "wecom-aibot 收到 disconnected 事件，服务端主动断开旧连接");
+  };
+
+  /**
+   * 用户点击模板卡片按钮事件。
+   * 把它作为特殊的入站消息上报：text 形如 "[card:<event_key>]"，
+   * raw 中保留完整事件对象，业务层可据此做交互逻辑（如多轮对话状态机）。
+   */
+  const handleTemplateCardEvent = async (
+    frame: WsFrame<EventMessageWith<import("@wecom/aibot-node-sdk").TemplateCardEventData>>,
+  ) => {
+    const body = frame.body;
+    if (!body) return;
+    try {
+      const peerId = buildPeerId(body as unknown as BaseMessage);
+      // 卡片点击也算"待回复"事件，记录帧用于 5 秒内更新卡片或回复
+      lastInboundFrame.set(peerId, { headers: frame.headers });
+
+      const eventKey = body.event?.event_key ?? "";
+      const taskId = body.event?.task_id ?? "";
+      const text = `[card:${eventKey || taskId || "unknown"}]`;
+
+      log.info({ peerId, eventKey, taskId }, "wecom-aibot 卡片按钮事件");
+
+      await onMessage({
+        channel: "wecom-aibot",
+        identityId: identity.id,
+        peerId,
+        text,
+        parts: [{ type: "text", text }],
+        raw: frame,
+      });
+    } catch (error) {
+      log.error({ error }, "wecom-aibot handleTemplateCardEvent 失败");
+    }
   };
 
   // -------------------------------------------------------------------------
@@ -285,9 +444,71 @@ export function createWeComBotAdapter(
             }
           }
         } else if (part.type === "image" || part.type === "file" || part.type === "audio") {
-          // TODO: 用 wsClient.uploadMedia + replyMedia / sendMediaMessage
-          log.warn({ type: part.type }, "wecom-aibot 媒体发送暂未实现");
-          throw new Error(`wecom-aibot 媒体类型 ${part.type} 暂未实现`);
+          // 上传到企微临时素材（3 天有效），再用 media_id 发送
+          // 类型映射：image→image, file→file, audio→voice
+          const wecomMediaType = part.type === "audio" ? "voice" : part.type;
+          const filePath = (part as { filePath: string }).filePath;
+          const filename =
+            (part as { filename?: string }).filename ??
+            (filePath ? filePath.split(/[/\\]/).pop() ?? "file" : "file");
+
+          if (!filePath) {
+            throw new Error(`wecom-aibot ${part.type} 缺少 filePath`);
+          }
+
+          // 读文件
+          const { readFile } = await import("node:fs/promises");
+          const fileBuffer = await readFile(filePath);
+
+          // 上传（SDK 内部分片）
+          const uploadResult = await withDeliveryRetry(
+            "wecom-aibot.uploadMedia",
+            () =>
+              wsClient!.uploadMedia(fileBuffer, {
+                type: wecomMediaType as "image" | "file" | "voice",
+                filename,
+              }),
+            { logger: log },
+          );
+          const mediaId = uploadResult.media_id;
+          log.debug({ mediaId, filename, type: wecomMediaType }, "wecom-aibot 媒体上传成功");
+
+          // 发送（被动回复或主动推送）
+          if (replyFrame) {
+            await withDeliveryRetry(
+              "wecom-aibot.replyMedia",
+              () => wsClient!.replyMedia(replyFrame, wecomMediaType as any, mediaId),
+              { logger: log },
+            );
+          } else {
+            await withDeliveryRetry(
+              "wecom-aibot.sendMediaMessage",
+              () => wsClient!.sendMediaMessage(parsed.chatid, wecomMediaType as any, mediaId),
+              { logger: log },
+            );
+          }
+
+          // caption 作为附加文本消息
+          const caption = (part as { caption?: string }).caption;
+          if (caption?.trim()) {
+            if (replyFrame) {
+              await withDeliveryRetry(
+                "wecom-aibot.replyStreamCaption",
+                () => wsClient!.replyStream(replyFrame, generateRandomString(16), caption, true),
+                { logger: log },
+              );
+            } else {
+              await withDeliveryRetry(
+                "wecom-aibot.sendMessageCaption",
+                () =>
+                  wsClient!.sendMessage(parsed.chatid, {
+                    msgtype: "markdown",
+                    markdown: { content: caption },
+                  }),
+                { logger: log },
+              );
+            }
+          }
         }
 
         sentParts += 1;
@@ -302,6 +523,33 @@ export function createWeComBotAdapter(
           code: classified.code,
           retryable: classified.retryable,
         });
+      }
+    }
+
+    // 处理模板卡片（如果提供）
+    if (message.meta?.templateCard) {
+      try {
+        if (replyFrame) {
+          await withDeliveryRetry(
+            "wecom-aibot.replyTemplateCard",
+            () => wsClient!.replyTemplateCard(replyFrame, message.meta!.templateCard!),
+            { logger: log },
+          );
+        } else {
+          await withDeliveryRetry(
+            "wecom-aibot.sendTemplateCard",
+            () =>
+              wsClient!.sendMessage(parsed.chatid, {
+                msgtype: "template_card",
+                template_card: message.meta!.templateCard!,
+              }),
+            { logger: log },
+          );
+        }
+        log.debug({ cardType: message.meta.templateCard.card_type }, "wecom-aibot 模板卡片已发送");
+      } catch (error) {
+        const classified = classifyDeliveryError(error);
+        log.warn({ error, code: classified.code }, "wecom-aibot 模板卡片发送失败");
       }
     }
 
@@ -367,6 +615,12 @@ export function createWeComBotAdapter(
         "event.disconnected_event",
         (frame: WsFrame<EventMessageWith<DisconnectedEventData>>) => {
           handleDisconnected(frame);
+        },
+      );
+      wsClient.on(
+        "event.template_card_event",
+        (frame: WsFrame<EventMessageWith<import("@wecom/aibot-node-sdk").TemplateCardEventData>>) => {
+          void handleTemplateCardEvent(frame);
         },
       );
 

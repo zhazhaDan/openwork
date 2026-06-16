@@ -18,7 +18,7 @@ import { isWithinWorkspaceRootPath, normalizeScopedDirectoryPath } from "./path-
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
-import { registerExtAdapters, createExtBridgeHandlers } from "./channels-ext.js";
+import { registerExtAdapters, createExtBridgeHandlers, isValidChannel } from "./channels-ext.js";
 
 type Adapter = {
   key: string;
@@ -153,6 +153,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
   slack: "Slack",
   feishu: "Feishu",
   mattermost: "Mattermost",
+  wecom: "WeChat Work",
 };
 
 const TYPING_INTERVAL_MS = 6000;
@@ -781,6 +782,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           slack: Array.from(adapters.keys()).some((key) => key.startsWith("slack:")),
           feishu: Array.from(adapters.keys()).some((key) => key.startsWith("feishu:")),
           mattermost: Array.from(adapters.keys()).some((key) => key.startsWith("mattermost:")),
+          wecom: Array.from(adapters.keys()).some((key) => key.startsWith("wecom:")),
+          "wecom-aibot": Array.from(adapters.keys()).some((key) => key.startsWith("wecom-aibot:")),
         },
         config: {
           groupsEnabled,
@@ -1338,7 +1341,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           const identityIdRaw = filters?.identityId?.trim();
           let channel: ChannelName | undefined;
           if (channelRaw) {
-            if (channelRaw === "telegram" || channelRaw === "slack") {
+            if (isValidChannel(channelRaw)) {
               channel = channelRaw as ChannelName;
             } else {
               throw new Error("Invalid channel");
@@ -1358,7 +1361,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         setBinding: async (input: { channel: string; identityId?: string; peerId: string; directory: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (!isValidChannel(channel)) {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1383,7 +1386,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         clearBinding: async (input: { channel: string; identityId?: string; peerId: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (!isValidChannel(channel)) {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1405,7 +1408,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           autoBind?: boolean;
         }) => {
           const channelRaw = input.channel.trim().toLowerCase();
-          if (channelRaw !== "telegram" && channelRaw !== "slack") {
+          if (!isValidChannel(channelRaw)) {
             throw new Error("Invalid channel");
           }
           const channel = channelRaw as ChannelName;
