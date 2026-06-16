@@ -20,6 +20,8 @@ import type {
   Config,
   FeishuIdentity,
   MattermostIdentity,
+  WeComIdentity,
+  WeComBotIdentity,
   ModelRef,
   OpenCodeRouterConfigFile,
 } from "./config.js";
@@ -29,9 +31,22 @@ import type { MediaStore } from "./media-store.js";
 
 import { createFeishuAdapter, isFeishuPeerId, type FeishuAdapter } from "./feishu.js";
 import { createMattermostAdapter, isMattermostPeerId, type MattermostAdapter } from "./mattermost.js";
+import { createWeComAdapter, isWeComPeerId, type WeComAdapter } from "./wecom.js";
+import { createWeComBotAdapter, isWeComBotPeerId, type WeComBotAdapter } from "./wecom-aibot.js";
 
 // Re-export peer ID helpers for bridge.ts.
 export { isFeishuPeerId, isMattermostPeerId };
+
+/**
+ * 取必填字段的字符串值。接受 string / number / boolean，
+ * 其他（undefined/null/object）返回空串，让上层抛 "X is required"。
+ */
+function coerceFieldString(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value).trim();
+  if (typeof value === "boolean") return String(value);
+  return "";
+}
 
 function parseModelString(value: unknown): ModelRef | undefined {
   if (!value || typeof value !== "string") return undefined;
@@ -86,7 +101,7 @@ type CliAddOption = {
 
 type ChannelDef<I extends { id: string; enabled?: boolean; directory?: string }> = {
   /** Channel name literal */
-  channel: "feishu" | "mattermost";
+  channel: "feishu" | "mattermost" | "wecom" | "wecom-aibot";
   /** Key in channels.<channel> config file block (e.g. "apps" or "bots") */
   listKey: string;
 
@@ -106,7 +121,7 @@ type ChannelDef<I extends { id: string; enabled?: boolean; directory?: string }>
     logger: Logger,
     onMessage: (msg: InboundMessage) => void,
     mediaStore: MediaStore,
-  ) => FeishuAdapter | MattermostAdapter;
+  ) => FeishuAdapter | MattermostAdapter | WeComAdapter | WeComBotAdapter;
 
   /** Required fields for upsert (fieldName → label) */
   requiredFields: [string, string][];
@@ -176,6 +191,9 @@ export type ExtHealthHandlers = {
   listMattermostIdentities?: () => Promise<{ items: Array<{ id: string; enabled: boolean; running: boolean }> }>;
   upsertMattermostIdentity?: (input: { id?: string; serverUrl: string; accessToken: string; enabled?: boolean; directory?: string }) => Promise<UpsertIdentityResult>;
   deleteMattermostIdentity?: (id: string) => Promise<DeleteIdentityResult>;
+  listWecomIdentities?: () => Promise<{ items: Array<{ id: string; enabled: boolean; running: boolean }> }>;
+  upsertWecomIdentity?: (input: { id?: string; corpId: string; agentId: number; agentSecret: string; enabled?: boolean; directory?: string; token?: string; aesKey?: string }) => Promise<UpsertIdentityResult>;
+  deleteWecomIdentity?: (id: string) => Promise<DeleteIdentityResult>;
 };
 
 export type UpsertIdentityResult = {
@@ -195,7 +213,13 @@ export type DeleteIdentityResult = {
 };
 
 export function isValidChannel(name: string): name is ChannelName {
-  return name === "telegram" || name === "slack" || name === "feishu" || name === "mattermost";
+  return (
+    name === "telegram" ||
+    name === "slack" ||
+    name === "feishu" ||
+    name === "mattermost" ||
+    name === "wecom"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +345,125 @@ const MATTERMOST_DEF: ChannelDef<MattermostIdentity> = {
   ],
 };
 
+const WECOM_DEF: ChannelDef<WeComIdentity> = {
+  channel: "wecom",
+  listKey: "apps",
+
+  runtimeList: (c) => c.wecomApps,
+  setRuntimeList: (c, v) => {
+    c.wecomApps.splice(0, c.wecomApps.length, ...(v as WeComIdentity[]));
+  },
+  configList: (cfg) => {
+    const ch = cfg.channels?.wecom;
+    return Array.isArray((ch as any)?.apps) ? ((ch as any).apps as Record<string, unknown>[]) : [];
+  },
+  setConfigList: (cfg, identities) => {
+    const next = { ...cfg };
+    next.channels = next.channels ?? {};
+    const existing = next.channels?.wecom ?? {};
+    next.channels.wecom = { ...existing, enabled: true, apps: identities as WeComIdentity[] };
+    return next;
+  },
+
+  createAdapter: (identity, config, logger, onMessage, mediaStore) =>
+    createWeComAdapter(identity, config, logger, onMessage as any, mediaStore),
+
+  requiredFields: [
+    ["corpId", "Corp ID"],
+    ["agentId", "Agent ID"],
+    ["agentSecret", "Agent Secret"],
+  ],
+
+  buildIdentity: (input, id, existing): WeComIdentity => ({
+    id,
+    corpId: String(input.corpId ?? "").trim(),
+    agentId: typeof input.agentId === "number" ? input.agentId : parseInt(String(input.agentId ?? "0")),
+    agentSecret: String(input.agentSecret ?? "").trim(),
+    enabled: input.enabled !== false,
+    ...(typeof input.directory === "string" && input.directory.trim()
+      ? { directory: String(input.directory).trim() }
+      : existing?.directory
+        ? { directory: existing.directory }
+        : {}),
+    ...(typeof input.token === "string" && input.token.trim()
+      ? { token: String(input.token).trim() }
+      : existing?.token
+        ? { token: existing.token }
+        : {}),
+    ...(typeof input.aesKey === "string" && input.aesKey.trim()
+      ? { aesKey: String(input.aesKey).trim() }
+      : existing?.aesKey
+        ? { aesKey: existing.aesKey }
+        : {}),
+    ...extractDefaults(input, existing),
+  }),
+
+  deriveDefaultId: (input) => {
+    const corpId = typeof input.corpId === "string" ? input.corpId.trim() : "";
+    return corpId || "default";
+  },
+
+  listFields: ["corpId", "agentId"],
+
+  cliAddOptions: [
+    { flag: "--corp-id", arg: "<corpId>", desc: "WeChat Work Corp ID", required: true },
+    { flag: "--agent-id", arg: "<agentId>", desc: "Agent ID", required: true },
+    { flag: "--agent-secret", arg: "<agentSecret>", desc: "Agent Secret", required: true },
+    { flag: "--token", arg: "<token>", desc: "Webhook Token (optional)", required: false },
+    { flag: "--aes-key", arg: "<aesKey>", desc: "EncodingAESKey (optional)", required: false },
+    { flag: "--default-agent", arg: "<agent>", desc: "Default OpenCode agent name", required: false },
+    { flag: "--default-model", arg: "<provider/model>", desc: "Default model (providerID/modelID)", required: false },
+  ],
+};
+
+const WECOM_BOT_DEF: ChannelDef<WeComBotIdentity> = {
+  channel: "wecom-aibot",
+  listKey: "bots",
+
+  runtimeList: (c) => c.wecomBots,
+  setRuntimeList: (c, v) => {
+    c.wecomBots.splice(0, c.wecomBots.length, ...(v as WeComBotIdentity[]));
+  },
+  configList: (cfg) => {
+    const ch = (cfg.channels as any)?.["wecom-aibot"];
+    return Array.isArray(ch?.bots) ? (ch.bots as Record<string, unknown>[]) : [];
+  },
+  setConfigList: (cfg, identities) => {
+    const next = { ...cfg };
+    next.channels = next.channels ?? {};
+    const existing = (next.channels as any)?.["wecom-aibot"] ?? {};
+    (next.channels as any)["wecom-aibot"] = { ...existing, enabled: true, bots: identities };
+    return next;
+  },
+
+  createAdapter: (identity, config, logger, onMessage, mediaStore) =>
+    createWeComBotAdapter(identity, config, logger, onMessage as any, mediaStore),
+
+  requiredFields: [
+    ["botId", "Bot ID"],
+    ["secret", "Secret"],
+  ],
+  buildIdentity: (input, id, existing): WeComBotIdentity => ({
+    id,
+    botId: coerceFieldString(input.botId, "Bot ID"),
+    secret: coerceFieldString(input.secret, "Secret"),
+    enabled: input.enabled !== false,
+    ...(input.directory ? { directory: input.directory } : {}),
+    ...(input.defaultAgent ? { defaultAgent: input.defaultAgent } : {}),
+    ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+  }),
+  validatePeerId: isWeComBotPeerId,
+
+  listFields: ["botId"],
+
+  cliAddOptions: [
+    { flag: "--bot-id", arg: "<botId>", desc: "企微智能机器人 Bot ID", required: true },
+    { flag: "--secret", arg: "<secret>", desc: "Secret", required: true },
+    { flag: "--default-agent", arg: "<agent>", desc: "Default OpenCode agent name", required: false },
+    { flag: "--default-model", arg: "<provider/model>", desc: "Default model (providerID/modelID)", required: false },
+  ],
+};
+
 /**
  * All registered channel definitions. Adding a new channel means:
  * 1. Define its ChannelDef here
@@ -328,7 +471,7 @@ const MATTERMOST_DEF: ChannelDef<MattermostIdentity> = {
  * 3. Add coercion function in config.ts
  * Everything else (adapters, health, HTTP, CLI) is automatic.
  */
-const CHANNEL_DEFS = [FEISHU_DEF, MATTERMOST_DEF] as ChannelDef<any>[];
+const CHANNEL_DEFS = [FEISHU_DEF, MATTERMOST_DEF, WECOM_DEF, WECOM_BOT_DEF] as ChannelDef<any>[];
 
 // ---------------------------------------------------------------------------
 // Generic: adapter registration
@@ -403,9 +546,9 @@ export function createExtBridgeHandlers(
 
   function makeUpsertHandler(def: ChannelDef<any>) {
     return async (input: Record<string, unknown>) => {
-      // Validate required fields
+      // Validate required fields (accept string / number / boolean inputs)
       for (const [field, label] of def.requiredFields) {
-        const val = typeof input[field] === "string" ? String(input[field]).trim() : "";
+        const val = coerceFieldString(input[field]);
         if (!val) throw new Error(`${label} is required`);
       }
 
@@ -596,9 +739,9 @@ export async function handleExtChannelRoute(
         const raw = await readBody(req);
         const payload = JSON.parse(raw || "{}");
 
-        // Validate required fields
+        // Validate required fields (accept string / number / boolean inputs)
         for (const [field, label] of def.requiredFields) {
-          const val = typeof payload[field] === "string" ? String(payload[field]).trim() : "";
+          const val = coerceFieldString(payload[field]);
           if (!val) {
             jsonResponse(res, 400, { ok: false, error: `${label} is required` });
             return true;

@@ -10,7 +10,7 @@ const packageDir = path.resolve(moduleDir, "..");
 dotenv.config({ path: path.join(packageDir, ".env") });
 dotenv.config();
 
-export type ChannelName = "telegram" | "slack" | "feishu" | "mattermost";
+export type ChannelName = "telegram" | "slack" | "feishu" | "mattermost" | "wecom" | "wecom-aibot";
 
 export type TelegramIdentity = {
   id: string;
@@ -58,6 +58,39 @@ export type MattermostIdentity = {
   defaultModel?: ModelRef;
 };
 
+export type WeComIdentity = {
+  id: string;
+  corpId: string;
+  agentId: number;
+  agentSecret: string;
+  enabled?: boolean;
+  directory?: string;
+  // Optional fields for Webhook (message receiving)
+  token?: string;
+  aesKey?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+};
+
+/**
+ * 企业微信智能机器人身份（基于 WebSocket 长连接）
+ *
+ * 与 WeComIdentity（自建应用 webhook）完全独立的机制：
+ * - 走官方 @wecom/aibot-node-sdk
+ * - 客户端主动连企微 WebSocket，无需公网 URL
+ * - 凭证只需 botId + secret
+ * - 支持流式回复（aibot_respond_msg with finish=false/true）
+ */
+export type WeComBotIdentity = {
+  id: string;
+  botId: string;
+  secret: string;
+  enabled?: boolean;
+  directory?: string;
+  defaultAgent?: string;
+  defaultModel?: ModelRef;
+};
+
 export type ModelRef = {
   providerID: string;
   modelID: string;
@@ -92,6 +125,14 @@ export type OpenCodeRouterConfigFile = {
       enabled?: boolean;
       bots?: MattermostIdentity[];
     };
+    wecom?: {
+      enabled?: boolean;
+      apps?: WeComIdentity[];
+    };
+    "wecom-aibot"?: {
+      enabled?: boolean;
+      bots?: WeComBotIdentity[];
+    };
   };
 };
 
@@ -107,6 +148,8 @@ export type Config = {
   slackApps: SlackIdentity[];
   feishuApps: FeishuIdentity[];
   mattermostBots: MattermostIdentity[];
+  wecomApps: WeComIdentity[];
+  wecomBots: WeComBotIdentity[];
   dataDir: string;
   dbPath: string;
   logFile: string;
@@ -329,6 +372,60 @@ function coerceMattermostBots(file: OpenCodeRouterConfigFile): MattermostIdentit
   return normalized;
 }
 
+function coerceWeComApps(file: OpenCodeRouterConfigFile): WeComIdentity[] {
+  const wecom = file.channels?.wecom;
+  const apps = Array.isArray((wecom as any)?.apps) ? ((wecom as any).apps as unknown[]) : [];
+  const normalized: WeComIdentity[] = [];
+  for (const entry of apps) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const corpId = typeof record.corpId === "string" ? record.corpId.trim() : "";
+    const agentSecret = typeof record.agentSecret === "string" ? record.agentSecret.trim() : "";
+    const agentId = typeof record.agentId === "number" ? record.agentId : 0;
+    if (!corpId || !agentSecret || !agentId) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    const token = typeof record.token === "string" ? record.token.trim() : "";
+    const aesKey = typeof record.aesKey === "string" ? record.aesKey.trim() : "";
+    normalized.push({
+      id,
+      corpId,
+      agentId,
+      agentSecret,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+      ...(token ? { token } : {}),
+      ...(aesKey ? { aesKey } : {}),
+      ...coerceDefaults(record),
+    });
+  }
+  return normalized;
+}
+
+function coerceWeComBots(file: OpenCodeRouterConfigFile): WeComBotIdentity[] {
+  const block = (file.channels as any)?.["wecom-aibot"];
+  const bots = Array.isArray(block?.bots) ? (block.bots as unknown[]) : [];
+  const normalized: WeComBotIdentity[] = [];
+  for (const entry of bots) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const botId = typeof record.botId === "string" ? record.botId.trim() : "";
+    const secret = typeof record.secret === "string" ? record.secret.trim() : "";
+    if (!botId || !secret) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    normalized.push({
+      id,
+      botId,
+      secret,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+      ...coerceDefaults(record),
+    });
+  }
+  return normalized;
+}
+
 export function loadConfig(
   env: EnvLike = process.env,
   options: { requireOpencode?: boolean } = {},
@@ -356,6 +453,8 @@ export function loadConfig(
   const slackApps = coerceSlackApps(configFile);
   const feishuApps = coerceFeishuApps(configFile);
   const mattermostBots = coerceMattermostBots(configFile);
+  const wecomApps = coerceWeComApps(configFile);
+  const wecomBots = coerceWeComBots(configFile);
 
   const envTelegram = env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
   if (envTelegram && !telegramBots.some((bot) => bot.token === envTelegram)) {
@@ -391,6 +490,8 @@ export function loadConfig(
     })),
     feishuApps,
     mattermostBots,
+    wecomApps,
+    wecomBots,
     dataDir,
     dbPath,
     logFile,
