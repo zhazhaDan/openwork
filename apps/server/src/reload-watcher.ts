@@ -188,7 +188,7 @@ function startWorkspaceReloadWatcher(input: {
         });
       });
     } catch (error) {
-      logger?.log("warn", "Reload watcher .opencode failed", {
+      logger?.log("warn", "Reload watcher .tron failed", {
         workspaceId: workspace.id,
         workspacePath: root,
         error: error instanceof Error ? error.message : String(error),

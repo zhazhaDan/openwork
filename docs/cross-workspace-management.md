@@ -322,7 +322,7 @@ Rust watcher 检测变化 -> 分类 reason -> emit "openwork://reload-required" 
 |---|---|
 | OpenCode 连接 | 不同 URL -> Server 不同 mount -> 不同 x-opencode-directory |
 | SQLite 数据库 | 不同 `.tron/tron.db` (per workspace path) |
-| 配置文件 | 不同 `.tron/wudong.jsonc` (per workspace path) |
+| 配置文件 | 不同 `.tron/tron.jsonc` (per workspace path) |
 | Skills | 不同 `.tron/skills/` (per workspace path) |
 | Commands | 不同 `.tron/commands/` (per workspace path) |
 | LLM Provider | 不同 tron.jsonc 中的 provider 配置 |
@@ -417,11 +417,11 @@ OpenCode Server (单进程):
 |  |                                                     | |
 |  |  x-opencode-directory: /User/A                      | |
 |  |    -> SQLite: /User/A/.tron/tron.db                 | |
-|  |    -> Config: /User/A/.tron/wudong.jsonc              | |
+|  |    -> Config: /User/A/.tron/tron.jsonc              | |
 |  |                                                     | |
 |  |  x-opencode-directory: /User/B                      | |
 |  |    -> SQLite: /User/B/.tron/tron.db                 | |
-|  |    -> Config: /User/B/.tron/wudong.jsonc              | |
+|  |    -> Config: /User/B/.tron/tron.jsonc              | |
 |  |                                                     | |
 |  |  Session/Message/Todo/Permission 全部按 dir 隔离    | |
 |  +-----------------------------------------------------+ |

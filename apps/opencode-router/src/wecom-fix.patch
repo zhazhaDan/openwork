@@ -1,0 +1,5 @@
+需要修复的问题：
+1. fast-xml-parser 导入问题
+2. MessageDeliveryResult 结构不匹配
+3. withDeliveryRetry 函数签名变化
+4. classifyDeliveryError 只需要 1 个参数

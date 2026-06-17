@@ -8,48 +8,56 @@ import { readJsoncFile, updateJsoncPath, updateJsoncTopLevel, writeJsoncFile } f
 import type { ReloadReason } from "./types.js";
 
 const BROWSER_PLUGIN = "opencode-chrome-devtools";
-const LEGACY_BROWSER_MCP_KEYS = ["openwork-browser", "chrome", "chrome-devtools", "control-chrome"];
+const LEGACY_BROWSER_MCP_KEYS = ["wudong-browser", "chrome", "chrome-devtools", "control-chrome"];
 
-const OPENWORK_ARTIFACT_GUIDANCE = `<!-- OPENWORK_ARTIFACTS_START -->
-## OpenWork Artifacts
+const OPENWORK_ARTIFACT_GUIDANCE = `<!-- WUDONG_ARTIFACTS_START -->
+## wudong Artifacts
 
-OpenWork can preview, edit, and download standard artifacts when you create or update them in the workspace.
+wudong can preview, edit, and download standard artifacts when you create or update them in the workspace.
 
 - Prefer standard output files for user-visible deliverables: Markdown (\`.md\`), CSV (\`.csv\`), Excel workbooks (\`.xlsx\`), and browser previews (\`index.html\` or a local \`http://localhost:<port>\` URL).
 - After creating or updating an artifact, mention the exact workspace-relative file path in your final response, for example \`reports/artifact-eval.md\` or \`reports/artifact-eval.xlsx\`.
 - Do not invent \`Workspace/<id>/...\` paths unless a tool returns them; prefer clean workspace-relative paths.
 - For websites or React/UI previews, start the dev server when useful and mention the \`http://localhost:<port>\` URL. Socket URLs such as \`ws://localhost:<port>/...\` are diagnostic hints, not primary preview links.
 - For spreadsheets, use \`.csv\` for simple tabular data and \`.xlsx\` when the user asks for Excel/XLS specifically.
-<!-- OPENWORK_ARTIFACTS_END -->`;
+<!-- WUDONG_ARTIFACTS_END -->`;
 
 const OPENWORK_AGENT = `---
-description: OpenWork default agent
+description: wudong default agent
 mode: primary
 temperature: 0.2
 ---
 
-You are OpenWork.
+## Language Policy
 
-When the user refers to "you", they mean the OpenWork app and the current workspace.
+Follow the user's language for all internal reasoning.
+用户使用哪种语言，你就用哪种语言进行内部推理。
+This rule takes precedence over the prompt's language.
+本条规则优先于提示词本身的书写语言。
+
+
+You are 悟东.
+
+When the user refers to "you", they mean the wudong app and the current workspace.
 
 Your job:
 - Help the user work on files safely.
 - Automate repeatable work.
 - Keep behavior portable and reproducible.
 
-<!-- OPENWORK_BROWSER_START -->
+<!-- WUDONG_BROWSER_START -->
 ## Browser
 
-OpenWork has a built-in browser that agents can control directly.
+wudong has a built-in browser that agents can control directly.
 Browser tools (\`browser_navigate\`, \`browser_snapshot\`, \`browser_click\`, \`browser_fill\`, \`browser_eval\`, \`browser_list\`, \`browser_screenshot\`) are available via the \`opencode-chrome-devtools\` plugin.
 
-**OpenWork Browser**:
-- \`browser_url\`: always use \`"http://127.0.0.1:{{BROWSER_CDP_PORT}}"\`.
+**wudong Browser**:
+- \`browser_url\`: always use \`"http://127.0.0.1:9222"\`.
 - Use for browsing tasks. The user sees what you do in real time.
 - Always call \`browser_list\` first to discover available targets, then use the appropriate \`target_id\`.
-- Choose the built-in browser target (usually \`about:blank\` or the page URL). Do not navigate the OpenWork app target itself (title \`OpenWork\` or URL containing \`:5173/#/workspace\`).
-- If the user asks for personal browser cookies, sign-ins, or installed extensions, explain that only the built-in OpenWork Browser is currently supported.
-<!-- OPENWORK_BROWSER_END -->
+- Choose the built-in browser target (usually \`about:blank\` or the page URL). Do not navigate the wudong app target itself (title \`wudong\` or URL containing \`:5173/#/workspace\`).
+- If the user asks for personal browser cookies, sign-ins, or installed extensions, explain that only the built-in wudong Browser is currently supported.
+<!-- WUDONG_BROWSER_END -->
 
 ## Memory
 
@@ -64,7 +72,15 @@ Hard rule: never copy private memory into repo files. Store only redacted summar
 - If required setup or credentials are missing, ask one targeted question and continue once provided.
 - If you change code, run the smallest meaningful test.
 - If steps repeat, factor them into a skill.
+- If work evolves into ongoing tasks, create or refine the corresponding agent role.
+- If the task needs periodic execution, schedule runs and store outputs into private memory.
 - Prefer clear, practical steps over abstract explanations.
+
+## Agent rule(.tron/agents/*.md)
+
+- If configuring pre-metadata mode, only use exact values: "primary", "subagent", "all"; reject any other inputs such as "secondary".
+- If marking a dedicated helper agent, set mode to "subagent"; use "primary" for core main agent; apply "all" to enable the agent across all contexts.
+- If an invalid mode value is supplied, the entire workspace will crash; strictly stick to the defined enum options at all times.
 
 ${OPENWORK_ARTIFACT_GUIDANCE}
 `;
@@ -127,7 +143,6 @@ async function ensureOpencodeConfig(workspaceRoot: string): Promise<boolean> {
   await writeJsoncFile(path, {
     $schema: "https://troncode.cn/config.json",
     default_agent: "wudong",
-    plugin: [BROWSER_PLUGIN],
   });
   return true;
 }
@@ -139,7 +154,7 @@ function resolveAgentTemplate(): string {
 
 async function ensureOpenworkAgent(workspaceRoot: string): Promise<boolean> {
   const agentsDir = join(workspaceRoot, ".tron", "agents");
-  const agentPath = join(agentsDir, "wudongWork.md");
+  const agentPath = join(agentsDir, "wudong.md");
   const agentContent = resolveAgentTemplate();
   await ensureDir(agentsDir);
   if (!(await exists(agentPath))) {
@@ -150,8 +165,8 @@ async function ensureOpenworkAgent(workspaceRoot: string): Promise<boolean> {
   let changed = false;
 
   // Patch artifacts section
-  const artStart = "<!-- OPENWORK_ARTIFACTS_START -->";
-  const artEnd = "<!-- OPENWORK_ARTIFACTS_END -->";
+  const artStart = "<!-- WUDONG_ARTIFACTS_START -->";
+  const artEnd = "<!-- WUDONG_ARTIFACTS_END -->";
   const artStartIdx = current.indexOf(artStart);
   const artEndIdx = current.indexOf(artEnd);
   if (artStartIdx >= 0 && artEndIdx > artStartIdx) {
@@ -163,8 +178,8 @@ async function ensureOpenworkAgent(workspaceRoot: string): Promise<boolean> {
   }
 
   // Patch browser section (replace with resolved CDP port)
-  const browserStart = "<!-- OPENWORK_BROWSER_START -->";
-  const browserEnd = "<!-- OPENWORK_BROWSER_END -->";
+  const browserStart = "<!-- WUDONG_BROWSER_START -->";
+  const browserEnd = "<!-- WUDONG_BROWSER_END -->";
   const bsIdx = current.indexOf(browserStart);
   const beIdx = current.indexOf(browserEnd);
   const resolvedBrowser = agentContent.slice(
@@ -236,7 +251,7 @@ export async function ensureWorkspaceFiles(workspaceRoot: string, presetInput: s
   await ensureDir(workspaceRoot);
   const reloadReasons = new Set<ReloadReason>();
   if (await ensureOpencodeConfig(workspaceRoot)) reloadReasons.add("config");
-  if (await ensureBrowserPlugin(workspaceRoot)) reloadReasons.add("config");
+  // if (await ensureBrowserPlugin(workspaceRoot)) reloadReasons.add("config");
   if (await ensureOpenworkAgent(workspaceRoot)) reloadReasons.add("agents");
   const openworkConfigChanged = await ensureWorkspaceOpenworkConfig(workspaceRoot, preset);
   return {

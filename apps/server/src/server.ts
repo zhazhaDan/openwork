@@ -622,6 +622,29 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
         return proxyWorkspaceOpencodeMount(canonicalOpencodeMount);
       }
 
+      // Global event stream (cross-workspace). Forwards to tron's /global/event,
+      // which emits { directory, payload } envelopes for every workspace served by
+      // the same opencode process. Used by the host (wudongPC main process) to
+      // maintain per-workspace activity state with a single long-lived SSE
+      // connection instead of one connection per workspace.
+      if (url.pathname === "/opencode/global/event") {
+        authMode = "client";
+        proxyService = "opencode";
+        proxyBaseUrl = config.workspaces[0]?.baseUrl?.trim() || undefined;
+        try {
+          const actor = await requireClient(request, config, tokens);
+          assertOpencodeProxyAllowed(actor, request.method, "/event");
+          const response = await proxyGlobalOpencodeEvent({ config, request });
+          return finalize(response);
+        } catch (error) {
+          const apiError = error instanceof ApiError
+            ? error
+            : new ApiError(500, "internal_error", "Unexpected server error");
+          errorMessage = apiError.message;
+          return finalize(jsonResponse(formatError(apiError), apiError.status));
+        }
+      }
+
       const mount = parseWorkspaceMount(url.pathname);
       if (mount && (mount.restPath === "/opencode" || mount.restPath.startsWith("/opencode/"))) {
         return proxyWorkspaceOpencodeMount(mount);
@@ -859,6 +882,58 @@ async function proxyOpencodeRequest(input: {
 }
 
 /**
+ * Proxy the cross-workspace event stream from tron's /global/event.
+ *
+ * Unlike proxyOpencodeRequest, this is not bound to a specific workspace:
+ * - The upstream URL is the shared opencode endpoint (config.workspaces[0].baseUrl).
+ *   All workspaces hit the same opencode process in the current single-router
+ *   architecture, so any workspace's baseUrl points to the same /global/event.
+ * - No x-opencode-directory header is sent — the upstream returns
+ *   { directory, payload } envelopes for every active directory.
+ * - Auth header (Basic auth for opencode) is still attached, using the first
+ *   workspace's credentials (they're identical across workspaces).
+ *
+ * Streams the SSE body directly; the caller (wudongPC main process) is
+ * responsible for reconnection, heartbeat monitoring, and dispatching events
+ * per directory.
+ */
+async function proxyGlobalOpencodeEvent(input: {
+  config: ServerConfig;
+  request: Request;
+}): Promise<Response> {
+  const anchor = input.config.workspaces[0];
+  if (!anchor) {
+    throw new ApiError(503, "opencode_unconfigured", "No workspaces registered; opencode endpoint unknown");
+  }
+  const connection = resolveWorkspaceOpencodeConnection(input.config, anchor);
+  const baseUrl = connection.baseUrl?.trim() ?? "";
+  if (!baseUrl) {
+    throw new ApiError(503, "opencode_unconfigured", "OpenCode base URL is missing");
+  }
+
+  const target = new URL(baseUrl);
+  target.pathname = "/global/event";
+  target.search = "";
+
+  const headers = new Headers(input.request.headers);
+  headers.delete("authorization");
+  headers.delete("x-openwork-host-token");
+  headers.delete("x-openwork-client-id");
+  headers.delete("x-opencode-directory");
+  headers.delete("host");
+  headers.delete("origin");
+  if (connection.authHeader) {
+    headers.set("Authorization", connection.authHeader);
+  }
+
+  const response = await fetch(target.toString(), {
+    method: "GET",
+    headers,
+  });
+  return sanitizeProxyResponse(response);
+}
+
+/**
  * Strip hop-by-hop and transport-level headers that Bun's native fetch keeps
  * in the upstream response even after it has already decoded the body for us.
  * Without this the browser sees `content-encoding: gzip` on a plain-text
@@ -1048,7 +1123,7 @@ function resolveDevLogPath(): string | null {
 }
 
 function resolveBrowserProvider(): Capabilities["toolProviders"]["browser"] {
-  const raw = (process.env.OPENWORK_BROWSER_PROVIDER ?? "").trim().toLowerCase();
+  const raw = (process.env.WUDONG_BROWSER_PROVIDER ?? "").trim().toLowerCase();
   if (raw === "sandbox-headless") {
     return { enabled: true, placement: "in-sandbox", mode: "headless" };
   }

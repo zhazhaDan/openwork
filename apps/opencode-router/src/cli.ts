@@ -22,6 +22,7 @@ import { createLogger } from "./logger.js";
 import { createClient } from "./opencode.js";
 import { parseSlackPeerId } from "./slack.js";
 import { truncateText } from "./text.js";
+import { registerExtCommands } from "./channels-ext.js";
 
 declare const __OPENCODE_ROUTER_VERSION__: string | undefined;
 
@@ -188,7 +189,7 @@ const program = new Command();
 program
   .name("opencode-router")
   .version(VERSION)
-  .description("opencode-router: Slack + Telegram bridge + directory routing")
+  .description("tron-router: Bot bridge + directory routing")
   .option("--json", "Output in JSON format", false);
 
 program
@@ -207,7 +208,7 @@ program
 
 program
   .command("health")
-  .description("Check opencode health (exit 0 if healthy, 1 if not)")
+  .description("Check tron health (exit 0 if healthy, 1 if not)")
   .action(async () => {
     const useJson = program.opts().json;
     const config = loadConfig(process.env, { requireOpencode: false });
@@ -246,7 +247,7 @@ program
 
 program
   .command("status")
-  .description("Show identity and opencode status")
+  .description("Show identity and tron status")
   .action(() => {
     const useJson = program.opts().json;
     const config = loadConfig(process.env, { requireOpencode: false });
@@ -622,6 +623,17 @@ program
       process.exit(1);
     }
   });
+
+// Extension channel commands (Feishu, Mattermost) — generated from ChannelDefs
+registerExtCommands(
+  program,
+  loadConfig,
+  readConfigFile,
+  writeConfigFile,
+  normalizeIdentityId,
+  outputJson,
+  outputError,
+);
 
 program.action(() => {
   program.outputHelp();

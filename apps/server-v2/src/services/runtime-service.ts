@@ -574,9 +574,9 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
     const identities = options.repositories.routerIdentities.listByServer(options.serverId).filter((identity) => identity.isEnabled);
     const bindings = options.repositories.routerBindings.listByServer(options.serverId).filter((binding) => binding.isEnabled);
     const dataDir = path.join(options.workingDirectory.runtimeDir, "router");
-    const configPath = path.join(dataDir, "opencode-router.json");
-    const dbPath = path.join(dataDir, "opencode-router.db");
-    const logFile = path.join(dataDir, "logs", "opencode-router.log");
+    const configPath = path.join(dataDir, "tron-router.json");
+    const dbPath = path.join(dataDir, "tron-router.db");
+    const logFile = path.join(dataDir, "logs", "tron-router.log");
     fs.mkdirSync(dataDir, { recursive: true });
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     const identityKindById = new Map(identities.map((identity) => [identity.id, identity.kind]));

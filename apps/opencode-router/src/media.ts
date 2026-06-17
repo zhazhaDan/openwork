@@ -1,11 +1,13 @@
 import { basename } from "node:path";
 
+import type { ChannelName } from "./config.js";
+
 export type MediaKind = "image" | "audio" | "file";
 
 export type InboundMediaAttachment = {
   id: string;
   kind: MediaKind;
-  source: "telegram" | "slack";
+  source: ChannelName;
   status: "ready" | "failed";
   filePath?: string;
   filename?: string;

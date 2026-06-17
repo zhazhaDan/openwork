@@ -703,11 +703,11 @@ async function resolveHostOpencodeGlobalDataDir(): Promise<string | null> {
 
   const candidates: string[] = [];
   const xdgData = process.env.XDG_DATA_HOME?.trim();
-  if (xdgData) candidates.push(join(xdgData, "opencode"));
-  candidates.push(join(homedir(), ".local", "share", "opencode"));
+  if (xdgData) candidates.push(join(xdgData, "tron"));
+  candidates.push(join(homedir(), ".local", "share", "tron"));
   if (process.platform === "darwin") {
     candidates.push(
-      join(homedir(), "Library", "Application Support", "opencode"),
+      join(homedir(), "Library", "Application Support", "tron"),
     );
   }
 
@@ -3057,7 +3057,7 @@ function resolveOpencodeStateLayout(options: {
   const xdgDataHome = join(rootDir, "xdg", "data");
   const xdgCacheHome = join(rootDir, "xdg", "cache");
   const xdgStateHome = join(rootDir, "xdg", "state");
-  const configDir = join(rootDir, "config", "opencode");
+  const configDir = join(rootDir, "config", "tron");
 
   return {
     devMode: true,
@@ -3092,7 +3092,7 @@ async function ensureOpencodeStateLayout(
   const xdgCacheHome = layout.env.XDG_CACHE_HOME;
   const xdgStateHome = layout.env.XDG_STATE_HOME;
   const opencodeDataDir = xdgDataHome
-    ? join(xdgDataHome, "opencode")
+    ? join(xdgDataHome, "tron")
     : undefined;
 
   for (const dir of [
@@ -3223,7 +3223,7 @@ function opencodeRouterSendToolSource(): string {
     "}",
     "",
     "export default tool({",
-    '  description: "Send a message via opencodeRouter (Telegram/Slack/Feishu/Mattermost) to a peer or directory bindings.",',
+    '  description: "Send a message via tronRouter (Telegram/Slack/Feishu/Mattermost) to a peer or directory bindings.",',
     "  args: {",
     '    text: tool.schema.string().describe("Message text to send"),',
     '    channel: tool.schema.enum(["telegram", "slack", "feishu", "mattermost"]).optional().describe("Channel to send on (default: telegram)"),',
@@ -6033,7 +6033,7 @@ async function runRouterDaemon(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  await ensureOpencodeManagedTools(opencodeConfigDir);
+  // await ensureOpencodeManagedTools(opencodeConfigDir);
   logger.info(
     "Daemon starting",
     { runId, logFormat, workdir: resolvedWorkdir, host, port },
@@ -7021,7 +7021,7 @@ async function runStart(args: ParsedArgs) {
   });
   const opencodeConfigDir = opencodeStateLayout.configDir;
   await ensureOpencodeStateLayout(opencodeStateLayout);
-  await ensureOpencodeManagedTools(opencodeConfigDir);
+  // await ensureOpencodeManagedTools(opencodeConfigDir);
   const opencodeRouterDataDir =
     sandboxMode === "none"
       ? join(dataDir, "tron-router", workspaceIdForLocal(resolvedWorkspace))

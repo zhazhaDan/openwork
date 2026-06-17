@@ -123,6 +123,10 @@ export const routePaths = {
       bindings: (workspaceId: string = WORKSPACE_ID_PARAMETER) => `${workspaceRoutePath(workspaceId)}/opencode-router/bindings`,
       health: (workspaceId: string = WORKSPACE_ID_PARAMETER) => `${workspaceRoutePath(workspaceId)}/opencode-router/health`,
       identities: {
+        feishu: (workspaceId: string = WORKSPACE_ID_PARAMETER, identityId: string = ":identityId") => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/feishu/${identityId}`,
+        feishuBase: (workspaceId: string = WORKSPACE_ID_PARAMETER) => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/feishu`,
+        mattermost: (workspaceId: string = WORKSPACE_ID_PARAMETER, identityId: string = ":identityId") => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/mattermost/${identityId}`,
+        mattermostBase: (workspaceId: string = WORKSPACE_ID_PARAMETER) => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/mattermost`,
         slack: (workspaceId: string = WORKSPACE_ID_PARAMETER, identityId: string = ":identityId") => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/slack/${identityId}`,
         slackBase: (workspaceId: string = WORKSPACE_ID_PARAMETER) => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/slack`,
         telegram: (workspaceId: string = WORKSPACE_ID_PARAMETER, identityId: string = ":identityId") => `${workspaceRoutePath(workspaceId)}/opencode-router/identities/telegram/${identityId}`,

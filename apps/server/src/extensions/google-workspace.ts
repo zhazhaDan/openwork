@@ -122,7 +122,7 @@ function readStringField(value: unknown, key: string): string {
 }
 
 function configDir(config: ServerConfig): string {
-  return dirname(config.configPath?.trim() || resolve(homedir(), ".config", "openwork", "server.json"));
+  return dirname(config.configPath?.trim() || resolve(homedir(), ".config", "server.json"));
 }
 
 function googleWorkspaceCredentials() {

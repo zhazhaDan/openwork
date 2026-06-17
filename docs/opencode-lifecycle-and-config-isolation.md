@@ -284,7 +284,7 @@ function buildOpencodeDirectoryHeader(directory): string | null {
 }
 ```
 
-### 3.4 配置文件系统：每 Workspace 独立的 `wudong.jsonc`
+### 3.4 配置文件系统：每 Workspace 独立的 `tron.jsonc`
 
 **注意**：GDD 分支已将品牌从 `opencode` 改为 `tron`。
 
@@ -306,17 +306,17 @@ workspace-root/
 ```typescript
 export function opencodeConfigPath(workspaceRoot: string): string {
   // 优先级从高到低：
-  1. .tron/wudong.jsonc    ← Git 友好，推荐
+  1. .tron/tron.jsonc    ← Git 友好，推荐
   2. .tron/wudong.json
   3. tron.jsonc          ← 根目录（向后兼容）
   4. tron.json
-  return hiddenJsoncPath;  // 默认返回 .tron/wudong.jsonc
+  return hiddenJsoncPath;  // 默认返回 .tron/tron.jsonc
 }
 ```
 
 ### 3.5 每个 Workspace 可独立配置的内容
 
-`wudong.jsonc` 中可配置的字段（通过 Server API 读写）：
+`tron.jsonc` 中可配置的字段（通过 Server API 读写）：
 
 | 配置域 | API 端点 | 隔离级别 |
 |---|---|---|
@@ -339,7 +339,7 @@ POST /w/ws_xxx/mcp
   │ body: { name: "my-mcp", config: { type: "stdio", command: "node", args: [...] } }
   ▼
 Server mcp.ts:
-  1. readJsoncFile(opencodeConfigPath(workspaceRoot))  // 读 .tron/wudong.jsonc
+  1. readJsoncFile(opencodeConfigPath(workspaceRoot))  // 读 .tron/tron.jsonc
   2. 合并 mcp 到 config.mcp 字段
   3. updateJsoncTopLevel(opencodeConfigPath(root), { mcp: mcpMap })  // 写回
   4. emitReloadEvent(ctx.reloadEvents, workspace, "mcp", trigger)
@@ -531,7 +531,7 @@ async function reloadOpencodeEngine(config, workspace) {
 ├──────────────────────┼──────────────────────────────────────────┤
 │ OpenCode 实例数       │ 1 个 (所有 workspace 共享)               │
 │ Workspace 隔离方式     │ x-opencode-directory HTTP header         │
-│ 配置文件              │ 每 workspace 独立 .tron/wudong.jsonc        │
+│ 配置文件              │ 每 workspace 独立 .tron/tron.jsonc        │
 │ SQLite DB             │ 每 workspace 独立 .tron/tron.db           │
 │ Server 进程数         │ 1 个 (单例，Mutex 保护)                  │
 │ 端口分配              │ Server: 48000-51000 随机; OpenCode: OS   │
@@ -546,5 +546,5 @@ async function reloadOpencodeEngine(config, workspace) {
 **设计哲学**：
 - **单一 OpenCode 进程**：节省资源，简化部署
 - **Header 级隔离**：无侵入，OpenCode 原生支持 multi-directory
-- **配置即代码**：`wudong.jsonc` 是唯一真相源，Server 只做代理和校验
+- **配置即代码**：`tron.jsonc` 是唯一真相源，Server 只做代理和校验
 - **端口随机化**：避免冲突，支持多实例并行开发
