@@ -265,6 +265,7 @@ function startWorkspaceReloadWatcher(input: {
       triggerType: "skill",
       logger,
       onChange: (trigger) => scheduleReasonCheck("skills", trigger),
+      maxDepth: 2,
     }),
   );
   trees.push(
@@ -275,6 +276,7 @@ function startWorkspaceReloadWatcher(input: {
       triggerType: "command",
       logger,
       onChange: (trigger) => scheduleReasonCheck("commands", trigger),
+      maxDepth: 0,
     }),
   );
   trees.push(
@@ -285,6 +287,7 @@ function startWorkspaceReloadWatcher(input: {
       triggerType: "plugin",
       logger,
       onChange: (trigger) => scheduleReasonCheck("plugins", trigger),
+      maxDepth: 0,
     }),
   );
   trees.push(
@@ -295,6 +298,7 @@ function startWorkspaceReloadWatcher(input: {
       triggerType: "agent",
       logger,
       onChange: (trigger) => scheduleReasonCheck("agents", trigger),
+      maxDepth: 1,
     }),
   );
   trees.push(
@@ -305,6 +309,7 @@ function startWorkspaceReloadWatcher(input: {
       triggerType: "agent",
       logger,
       onChange: (trigger) => scheduleReasonCheck("agents", trigger),
+      maxDepth: 1,
     }),
   );
 
@@ -324,8 +329,9 @@ function createDirectoryTreeWatcher(input: {
   triggerType: ReloadTrigger["type"];
   logger: Logger | null;
   onChange: (trigger?: ReloadTrigger) => void;
+  maxDepth: number;
 }): DirectoryTreeWatcher {
-  const { rootDir, workspace, reason, triggerType, logger, onChange } = input;
+  const { rootDir, workspace, reason, triggerType, logger, onChange, maxDepth } = input;
   const resolvedRoot = resolve(rootDir);
 
   const watchers = new Map<string, FSWatcher>();
@@ -432,11 +438,11 @@ function createDirectoryTreeWatcher(input: {
 
   const scanDirs = async (): Promise<Set<string>> => {
     const dirs = new Set<string>();
-    const stack = [resolvedRoot];
+    const stack: Array<{ dir: string; depth: number }> = [{ dir: resolvedRoot, depth: 0 }];
     while (stack.length) {
-      const dir = stack.pop();
-      if (!dir) continue;
+      const { dir, depth } = stack.pop()!;
       dirs.add(dir);
+      if (depth >= maxDepth) continue;
       let entries;
       try {
         entries = await readdir(dir, { withFileTypes: true });
@@ -446,7 +452,7 @@ function createDirectoryTreeWatcher(input: {
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         if (shouldSkipDir(entry.name)) continue;
-        stack.push(join(dir, entry.name));
+        stack.push({ dir: join(dir, entry.name), depth: depth + 1 });
       }
     }
     return dirs;
@@ -478,9 +484,12 @@ function createDirectoryTreeWatcher(input: {
       }
 
       const dirs = await scanDirs();
+      if (closed) return;
       for (const dir of dirs) {
+        if (closed) return;
         ensureWatcher(dir);
       }
+      if (closed) return;
       for (const dir of Array.from(watchers.keys())) {
         if (!dirs.has(dir)) {
           const watcher = watchers.get(dir);

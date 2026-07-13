@@ -38,13 +38,14 @@ async function collectTreeFiles(
   files: Set<string>,
   rootDir: string,
   shouldInclude: (absPath: string) => boolean,
+  maxDepth: number = Number.POSITIVE_INFINITY,
 ): Promise<void> {
   const resolvedRoot = resolve(rootDir);
   if (!(await exists(resolvedRoot))) return;
 
-  const stack = [resolvedRoot];
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: resolvedRoot, depth: 0 }];
   while (stack.length) {
-    const dir = stack.pop();
+    const { dir, depth } = stack.pop()!;
     if (!dir) continue;
 
     let entries;
@@ -57,7 +58,9 @@ async function collectTreeFiles(
     for (const entry of entries) {
       const absPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!shouldSkipDir(entry.name)) stack.push(absPath);
+        if (!shouldSkipDir(entry.name) && depth < maxDepth) {
+          stack.push({ dir: absPath, depth: depth + 1 });
+        }
         continue;
       }
       if (!entry.isFile()) continue;
@@ -81,8 +84,8 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
   if (reason === "agents") {
     await addIfExists(files, join(root, "AGENTS.md"));
     const isAgentFile = (absPath: string) => /\.(md|json|jsonc)$/i.test(basename(absPath));
-    await collectTreeFiles(files, join(root, ".tron", "agents"), isAgentFile);
-    await collectTreeFiles(files, join(root, ".tron", "agent"), isAgentFile);
+    await collectTreeFiles(files, join(root, ".tron", "agents"), isAgentFile, 1);
+    await collectTreeFiles(files, join(root, ".tron", "agent"), isAgentFile, 1);
   }
 
   if (reason === "skills") {
@@ -90,6 +93,7 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
       files,
       join(root, ".tron", "skills"),
       (absPath) => /^SKILL\.md$/i.test(basename(absPath)),
+      2,
     );
   }
 
@@ -98,11 +102,12 @@ async function collectFiles(workspaceRoot: string, reason: ReloadReason): Promis
       files,
       join(root, ".tron", "commands"),
       (absPath) => /\.md$/i.test(basename(absPath)),
+      0,
     );
   }
 
   if (reason === "plugins") {
-    await collectTreeFiles(files, join(root, ".tron", "plugins"), () => true);
+    await collectTreeFiles(files, join(root, ".tron", "plugins"), () => true, 0);
   }
 
   return Array.from(files).sort((a, b) => a.localeCompare(b));
