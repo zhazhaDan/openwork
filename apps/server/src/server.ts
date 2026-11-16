@@ -2660,7 +2660,7 @@ function resolveDevLogPath(): string | null {
 }
 
 function resolveBrowserProvider(): Capabilities["toolProviders"]["browser"] {
-  const raw = (process.env.OPENWORK_BROWSER_PROVIDER ?? "").trim().toLowerCase();
+  const raw = (process.env.WUDONG_BROWSER_PROVIDER ?? process.env.OPENWORK_BROWSER_PROVIDER ?? "").trim().toLowerCase();
   if (raw === "sandbox-interactive") return { enabled: true, placement: "in-sandbox", mode: "interactive" };
   if (raw === "sandbox-headless") {
     return { enabled: true, placement: "in-sandbox", mode: "headless" };
