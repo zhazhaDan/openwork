@@ -49,7 +49,7 @@ function nativeSkill(path: string, content: string): { name: string; body: strin
  *
  * This runs on OpenWork's skill write routes only, never before a prompt: the
  * engine alone decides which skills a turn sees, exactly as when `opencode2`
- * runs directly. Only `.opencode/skills` is compared, the one folder OpenWork
+ * runs directly. Only `.tron/skills` is compared, the one folder Wudong
  * writes and the one the engine ranks first. A skill the engine serves under
  * the same name from another file counts as reflected. Never throws; returns
  * whether the engine caught up before the deadline.
@@ -60,7 +60,7 @@ export async function waitForEngineSkillChanges(
   timeoutMs = 5_000,
 ): Promise<boolean> {
   const root = await realpath(directory).catch(() => directory);
-  const skillRoot = join(root, ".opencode", "skills");
+  const skillRoot = join(root, ".tron", "skills");
   // Deleted files cannot be resolved; map the configured spelling onto the real root.
   const canonical = async (path: string) => realpath(path).catch(() =>
     path.startsWith(directory + sep) ? join(root, path.slice(directory.length + 1)) : path);

@@ -135,7 +135,7 @@ async function writeInstalledCloudPlugins(
 function resolveWorkspaceInstallPath(workspaceRoot: string, relativePath: string): string {
   const normalized = relativePath.trim().replace(/^\/+/, "");
   const parts = normalized.split("/").filter(Boolean);
-  if (!normalized.startsWith(".opencode/") || parts.some((part) => part === "." || part === "..")) {
+  if (!normalized.startsWith(".tron/") || parts.some((part) => part === "." || part === "..")) {
     throw new ApiError(400, "invalid_cloud_plugin_path", `Invalid cloud plugin path: ${relativePath}`);
   }
   const root = resolve(workspaceRoot);
@@ -147,9 +147,9 @@ function resolveWorkspaceInstallPath(workspaceRoot: string, relativePath: string
 }
 
 async function removePluginWorkspaceFile(workspaceRoot: string, path: string): Promise<void> {
-  if (!path.startsWith(".opencode/")) return;
+  if (!path.startsWith(".tron/")) return;
   const absolutePath = resolveWorkspaceInstallPath(workspaceRoot, path);
-  if (/^\.opencode\/skills\/[^/]+\/[^/]+\/SKILL\.md$/.test(path)) {
+  if (/^\.tron\/skills\/[^/]+\/[^/]+\/SKILL\.md$/.test(path)) {
     await rm(dirname(absolutePath), { recursive: true, force: true });
     return;
   }

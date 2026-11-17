@@ -346,7 +346,7 @@ async function seedOpencodePluginDepsInner(input: {
 /**
  * Seed the standard config folders used by a fresh managed desktop engine,
  * not only its global one. Ancestor project configs keep their normal installs.
- * Project/home discovery folders are opt-in: never create `.opencode` for a
+ * Project/home discovery folders are opt-in: never create `.tron` for a
  * workspace that did not already have one. Existing install state and user
  * config files remain owned by OpenCode; a missing/broken bundle falls back
  * to its normal dependency install.
@@ -366,7 +366,7 @@ export async function seedManagedOpencodePluginDeps(input: {
   const explicit = input.env.OPENCODE_CONFIG_DIR;
   if (explicit) configDirs.add(resolve(input.cwd, explicit));
   for (const directory of [input.cwd, ...(input.workspaceDirs ?? []), discoveryHome]) {
-    const configDir = resolve(input.cwd, directory, ".opencode");
+    const configDir = resolve(input.cwd, directory, ".tron");
     if (await isDirectory(configDir)) configDirs.add(configDir);
   }
   const results: Array<{ configDir: string; result: PluginDepsSeedResult }> = [];

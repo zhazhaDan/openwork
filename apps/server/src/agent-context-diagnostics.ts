@@ -377,8 +377,8 @@ async function inspectProjectAgent(workspace: WorkspaceInfo, signal?: AbortSigna
       defaultAgentOverride: typeof data.default_agent === "string",
       agentConfigOverride: Object.hasOwn(agents, "openwork"),
       agentFileOverride: await Promise.all([
-        exists(join(workspace.path, ".opencode", "agent", "openwork.md")),
-        exists(join(workspace.path, ".opencode", "agents", "openwork.md")),
+        exists(join(workspace.path, ".tron", "agent", "wudong.md")),
+        exists(join(workspace.path, ".tron", "agents", "wudong.md")),
       ]).then((values) => values.some(Boolean)),
     };
   } catch {

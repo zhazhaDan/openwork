@@ -132,7 +132,7 @@ export function registerWorkspaceRoutes(options: RegisterWorkspaceRoutesOptions)
 
     const workspaceId = workspaceIdForPath(workspacePath);
     // Seed the per-workspace openwork config in the runtime DB (replaces the
-    // legacy `.opencode/openwork.json` file). No-op if a row already exists.
+    // legacy `.tron/wudong.json` file). No-op if a row already exists.
     await seedOpenworkWorkspaceConfigIfEmpty(
       config,
       workspaceId,

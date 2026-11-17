@@ -41,7 +41,7 @@ function errorStringField(error: unknown, field: "code" | "path" | "syscall"): s
 /**
  * Build the default per-workspace openwork config metadata. The openwork
  * config is now stored in the runtime DB (see
- * `seedOpenworkWorkspaceConfigIfEmpty`), not in `.opencode/openwork.json`, so
+ * `seedOpenworkWorkspaceConfigIfEmpty`), not in `.tron/wudong.json`, so
  * this no longer writes a file. Exposed so the workspace-creation route can
  * seed the DB row with the same defaults.
  */

@@ -2605,8 +2605,8 @@ function buildCapabilities(config: ServerConfig): Capabilities {
       files: {
         injection: writeEnabled && inboxEnabled,
         outbox: outboxEnabled,
-        inboxPath: ".opencode/openwork/inbox/",
-        outboxPath: ".opencode/openwork/outbox/",
+        inboxPath: ".tron/wudong/inbox/",
+        outboxPath: ".tron/wudong/outbox/",
         maxBytes,
       },
     },
@@ -3182,7 +3182,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "cloud_plugins.remove",
       summary: `Remove cloud plugin ${pluginId}`,
-      paths: [openworkConfigPath(workspace.path), join(workspace.path, ".opencode")],
+      paths: [openworkConfigPath(workspace.path), join(workspace.path, ".tron")],
     });
 
     const removed = await removeCloudPlugin({
@@ -4146,7 +4146,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "skills.upsert",
       summary: `Upsert skill ${name}`,
-      paths: [join(workspace.path, ".opencode", "skills", name, "SKILL.md")],
+      paths: [join(workspace.path, ".tron", "skills", name, "SKILL.md")],
     });
     const result = await upsertSkill(workspace.path, { name, content, description });
     await recordAudit(workspace.path, {
@@ -4182,7 +4182,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "skills.delete",
       summary: `Delete skill ${name}`,
-      paths: [join(workspace.path, ".opencode", "skills", name)],
+      paths: [join(workspace.path, ".tron", "skills", name)],
     });
     const result = await deleteSkill(workspace.path, name);
     await recordAudit(workspace.path, {
@@ -4731,7 +4731,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "commands.upsert",
       summary: `Upsert command ${name}`,
-      paths: [join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`)],
+      paths: [join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`)],
     });
     const path = await upsertCommand(workspace.path, {
       name,
@@ -4770,7 +4770,7 @@ function createRoutes(
       workspaceId: workspace.id,
       action: "commands.delete",
       summary: `Delete command ${name}`,
-      paths: [join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`)],
+      paths: [join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`)],
     });
     await deleteCommand(workspace.path, name);
     await recordAudit(workspace.path, {
@@ -4778,7 +4778,7 @@ function createRoutes(
       workspaceId: workspace.id,
       actor: ctx.actor ?? { type: "remote" },
       action: "commands.delete",
-      target: join(workspace.path, ".opencode", "commands"),
+      target: join(workspace.path, ".tron", "commands"),
       summary: `Deleted command ${name}`,
       timestamp: Date.now(),
     });
@@ -4787,7 +4787,7 @@ function createRoutes(
       type: "command",
       name: sanitizeCommandName(name),
       action: "removed",
-      path: join(workspace.path, ".opencode", "commands", `${sanitizeCommandName(name)}.md`),
+      path: join(workspace.path, ".tron", "commands", `${sanitizeCommandName(name)}.md`),
     });
     return jsonResponse({ ok: true });
   });
@@ -5114,7 +5114,7 @@ async function readOpenworkConfigForStatus(workspaceRoot: string): Promise<{
 
 /**
  * Resolve the effective per-workspace openwork config from the runtime DB,
- * migrating a legacy `.opencode/openwork.json` file into the DB on first read.
+ * migrating a legacy `.tron/wudong.json` file into the DB on first read.
  *
  * The DB is the source of truth. The file is only consulted to seed the DB
  * once (back-compat for workspaces created before the file->DB migration), and

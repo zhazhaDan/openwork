@@ -26,7 +26,7 @@ const CONFIG_SECTION_METADATA: Record<string, { warningId: string; label: string
   },
 };
 
-const PORTABLE_FILE_PREFIXES = [".opencode/plugins/", ".opencode/tools/"] as const;
+const PORTABLE_FILE_PREFIXES = [".tron/plugins/", ".tron/tools/"] as const;
 
 const COMMON_SECRET_KEY_PATTERNS = [
   { id: "apiKey", test: (tokens: string[], normalized: string) => normalized.includes("apikey") || hasWordPair(tokens, "api", "key") },

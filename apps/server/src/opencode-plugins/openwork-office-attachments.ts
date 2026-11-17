@@ -13,7 +13,7 @@ import {
 } from "@openwork/workbook";
 import { openWorkspaceFileForReading, openWorkspaceFileForWriting } from "../workspace-file-identity.js";
 
-const MATERIALIZED_DIR = join(".opencode", "openwork", "inbox", "chat-attachments");
+const MATERIALIZED_DIR = join(".tron", "wudong", "inbox", "chat-attachments");
 
 type RuntimeContext = {
   directory?: string;

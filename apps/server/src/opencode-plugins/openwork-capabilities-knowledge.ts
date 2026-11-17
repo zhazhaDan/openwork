@@ -67,7 +67,7 @@ ${automationRuntimeKnowledge()}
 
 ## Creating Plugins
 - Plugins extend OpenWork/OpenCode with custom tools.
-- Create a file in \`.opencode/plugins/my-plugin.ts\` and add it to the \`plugin\` array in \`opencode.json\`.
+- Create a file in \`.tron/plugins/my-plugin.ts\` and add it to the \`plugin\` array in \`tron.json\`.
 - Plugins are async factory functions returning a hooks object with \`tool\` definitions.
 - See the \`create-plugin\` skill for the full API reference.
 

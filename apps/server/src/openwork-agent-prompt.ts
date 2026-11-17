@@ -27,7 +27,7 @@ Your job:
 ## Memory
 
 Two kinds:
-1. Behavior memory (shareable, in git): .opencode/skills/**, .opencode/agents/**, repo docs
+1. Behavior memory (shareable, in git): .tron/skills/**, .tron/agents/**, repo docs
 2. Private memory (never commit): tokens, credentials, local config, logs
 
 Hard rule: never copy private memory into repo files. Store only redacted summaries, schemas, and stable pointers.

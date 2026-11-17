@@ -200,7 +200,7 @@ export async function listSkills(workspaceRoot: string, includeGlobal: boolean):
   const roots = await findWorkspaceRoots(workspaceRoot);
   const dirs: { dir: string; scope: "project" | "global" }[] = [];
   for (const root of roots) {
-    const opencodeDir = join(root, ".opencode", "skills");
+    const opencodeDir = join(root, ".tron", "skills");
     const claudeDir = join(root, ".claude", "skills");
     dirs.push({ dir: opencodeDir, scope: "project" });
     dirs.push({ dir: claudeDir, scope: "project" });

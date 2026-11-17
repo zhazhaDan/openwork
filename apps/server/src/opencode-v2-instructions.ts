@@ -3,7 +3,6 @@ import { glob, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { workspaceOpencodeConfigCandidates } from "@openwork/paths";
 import constants from "../../../constants.json" with { type: "json" };
 import { readJsoncFile } from "./jsonc.js";
 import { appendOrganizationPrompts, OPENWORK_AGENT_PROMPT, OPENWORK_CONNECT_ROUTING_INSTRUCTION } from "./openwork-agent-prompt.js";
@@ -26,7 +25,7 @@ const CONFIGURED_INSTRUCTIONS_MAX_BYTES = 192 * 1024;
 
 const execFileAsync = promisify(execFile);
 
-// Bun's node:fs glob never matches dot paths such as `.opencode/AGENTS.md`.
+// Bun's node:fs glob never matches dot paths such as `.tron/AGENTS.md`.
 async function matchFiles(pattern: string, cwd: string) {
   const matches: string[] = [];
   const found = typeof process.versions.bun === "string"
@@ -76,7 +75,7 @@ async function gitIgnored(cwd: string, paths: string[]) {
  */
 export async function readConfiguredInstructions(workspaceRoot: string): Promise<string | null> {
   const sources = new Set<string>();
-  for (const path of workspaceOpencodeConfigCandidates(workspaceRoot)) {
+  for (const path of [join(workspaceRoot, ".tron", "tron.jsonc"), join(workspaceRoot, ".tron", "tron.json")]) {
     const { data } = await readJsoncFile<{ instructions?: unknown }>(path, {}, { allowInvalid: true });
     if (!Array.isArray(data?.instructions)) continue;
     for (const source of data.instructions) if (typeof source === "string") sources.add(source);
