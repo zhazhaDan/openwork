@@ -7,7 +7,7 @@ import {
   type McpFetch,
   type McpResourceReader,
 } from "./connect-mcp-transport.js";
-import { readConnectCloudMcp, writeConnectCloudMcp } from "./connect-state.js";
+import { readConnectCloudMcp, readConnectState, writeConnectCloudMcp } from "./connect-state.js";
 import { readGlobalRuntimeMcpConfig, readRuntimeMcpConfig } from "./runtime-opencode-config-store.js";
 import { externalFetch } from "./server-fetch.js";
 import type { ServerConfig } from "./types.js";
@@ -174,6 +174,10 @@ async function readIndexCached(cloud: Record<string, unknown>, fetcher: McpFetch
  * server scope so Connect stays account-level.
  */
 async function readWorkingCloudIndex(config: ServerConfig, fetcher: McpFetch): Promise<CloudIndex | null> {
+  // The persisted Connect switch is the egress boundary. Stale global,
+  // server-scoped, or workspace MCP rows must never cause a Cloud request
+  // while Connect is disabled.
+  if (!(await readConnectState(config)).connectEnabled) return null;
   const serverCloud = await readConnectCloudMcp(config);
   const candidates: Array<{ cloud: Record<string, unknown>; source: "server" | "workspace" }> = [];
   const globalCloud = await readGlobalRuntimeMcpConfig(config, OPENWORK_CLOUD_MCP_NAME);
@@ -316,7 +320,7 @@ type InjectedMarketplaceSkill = {
 };
 
 function logInjectedMarketplaceSkills(skills: InjectedMarketplaceSkill[]): void {
-  if (process.env.OPENWORK_DEV_MODE !== "1") return;
+  if (process.env.OPENWORK_DEV_MODE !== "1" || skills.length === 0) return;
   console.log("[openwork:skills] marketplace skills injected into prompt", {
     count: skills.length,
     skills,
@@ -347,10 +351,7 @@ function collapseWhitespace(value: string): string {
  * description used to decide whether the skill applies.
  */
 export function renderOpenWorkConnectSkillInstruction(skills: OpenWorkConnectSkill[]): string {
-  if (skills.length === 0) {
-    logInjectedMarketplaceSkills([]);
-    return "";
-  }
+  if (skills.length === 0) return "";
   const injectedMarketplaceSkills: InjectedMarketplaceSkill[] = [];
   const lines = [
     "Remote Agent Skills are available from OpenWork Connect. The catalog below is discovery metadata only: each <skill> carries name (its stable machine identifier), capability (the exact value to execute), and source (marketplace / plugin when known); its text is the human-readable title and description.",

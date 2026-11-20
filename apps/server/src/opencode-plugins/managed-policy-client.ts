@@ -12,7 +12,7 @@ export async function checkManagedTool(tool: string, raw: unknown, evaluate = ch
   else if (["write", "edit", "apply_patch", "patch"].includes(tool)) action = "file_write";
   else if (tool === "webfetch" || tool === "websearch") action = tool;
   else if (tool === "browser_navigate" || tool === "browser_open") action = "browser";
-  else if (tool === "openwork_execute") {
+  else if (tool === "wudong_execute") {
     if (input.id === "browser.open_url") return evaluate("browser", record(input.args));
     if (typeof input.id === "string" && /^(?:plugin|skill|mcp)\.(?:install|add|update|remove)/.test(input.id)) action = "extensions";
   }

@@ -25,7 +25,7 @@ import { automationRuntimeKnowledge } from "../automation-runtime-knowledge.js";
 
 const OPENWORK_CAPABILITIES_KNOWLEDGE = `You are running inside OpenWork.
 
-For OpenWork product questions, use openwork_docs_search and openwork_docs_read as the first source of truth. OpenWork documentation tools answer product questions. Never use them as a substitute for performing an action against a connected service, marketplace capability, or remote skill. Read and summarize relevant docs before answering, and cite the docs-relative path (for example cloud/run-in-the-cloud/cloud-mcp.mdx) when it helps the user verify or continue. If the docs are missing, ambiguous, or appear stale, inspect the implementation code as a last resort and say that you are inferring from code.
+For OpenWork product questions, use wudong_docs_search and wudong_docs_read as the first source of truth. OpenWork documentation tools answer product questions. Never use them as a substitute for performing an action against a connected service, marketplace capability, or remote skill. Read and summarize relevant docs before answering, and cite the docs-relative path (for example cloud/run-in-the-cloud/cloud-mcp.mdx) when it helps the user verify or continue. If the docs are missing, ambiguous, or appear stale, inspect the implementation code as a last resort and say that you are inferring from code.
 
 Here is what you can help users with:
 
@@ -42,7 +42,7 @@ Here is what you can help users with:
 ## Connect and MCP servers
 - If the runtime steering says OpenWork Cloud is not ready, do not substitute documentation, browser, or UI tools for the connected-service action; direct the user to \`Settings > Library\` for inventory and \`Settings > Debug\` (developer mode) to repair and test agent access.
 - Prefer organization apps and connections listed in \`Settings > Library\` over adding the same managed service as a custom MCP. \`Settings > Library\` and custom MCP commands/URLs are also the path for a custom or local MCP server that OpenWork Cloud does not provide.
-- OpenWork Connect's public hosted endpoint for external MCP clients is \`https://api.openworklabs.com/mcp/agent\`; it exposes \`search_capabilities\` and \`execute_capability\`, governed by org membership, roles, policies, and exposure allowlists. \`app.openworklabs.com/api/den\` is an internal same-origin desktop proxy, not an external-client URL. Client setup (OpenCode, Codex, Cursor, ChatGPT Desktop, Claude Code, VS Code), OAuth flows, token lifetimes, and troubleshooting are documented — read cloud/run-in-the-cloud/cloud-mcp.mdx with openwork_docs_read before answering from memory.
+- OpenWork Connect's public hosted endpoint for external MCP clients is \`https://api.openworklabs.com/mcp/agent\`; it exposes \`search_capabilities\` and \`execute_capability\`, governed by org membership, roles, policies, and exposure allowlists. \`app.openworklabs.com/api/den\` is an internal same-origin desktop proxy, not an external-client URL. Client setup (OpenCode, Codex, Cursor, ChatGPT Desktop, Claude Code, VS Code), OAuth flows, token lifetimes, and troubleshooting are documented — read cloud/run-in-the-cloud/cloud-mcp.mdx with wudong_docs_read before answering from memory.
 
 ## Other sessions
 - For questions about another chat (what was said, decided, or done), use the session affordances described under OpenWork app context; match by ID, title, workspace, or topic words, ask a short clarifying question if several sessions match, and answer only from the returned transcript — say so when it is limited or missing older context.
@@ -79,7 +79,7 @@ const docsSearchArgsSchema = z.object({
 });
 
 const docsReadArgsSchema = z.object({
-  path: z.string().min(1).describe("Docs-relative path returned by openwork_docs_search, for example start-here/connect-your-stack/connect-services.mdx."),
+  path: z.string().min(1).describe("Docs-relative path returned by wudong_docs_search, for example start-here/connect-your-stack/connect-services.mdx."),
 });
 
 type DocsEntry = {
@@ -197,7 +197,7 @@ export const OpenWorkCapabilitiesKnowledge = async (context?: Parameters<typeof 
       ...(context?.directory ? [createInstructionSection("workspace-files", workspaceFileGuidance(context.directory))] : []));
   },
   tool: {
-    openwork_docs_search: {
+    wudong_docs_search: {
       description: "Search the bundled OpenWork documentation. Use this first for OpenWork product questions before inspecting implementation code.",
       args: docsSearchArgsSchema.shape,
       async execute(rawArgs: unknown) {
@@ -217,8 +217,8 @@ export const OpenWorkCapabilitiesKnowledge = async (context?: Parameters<typeof 
         return JSON.stringify({ ok: true, matches }, null, 2);
       },
     },
-    openwork_docs_read: {
-      description: "Read a bundled OpenWork documentation page by docs-relative path returned from openwork_docs_search.",
+    wudong_docs_read: {
+      description: "Read a bundled OpenWork documentation page by docs-relative path returned from wudong_docs_search.",
       args: docsReadArgsSchema.shape,
       async execute(rawArgs: unknown) {
         const args = docsReadArgsSchema.parse(rawArgs);

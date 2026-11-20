@@ -11,7 +11,7 @@
  *   token: clientToken,
  *   hostToken: hostToken,
  *   manageOpencode: true,
- *   opencodeBin: "/path/to/opencode",
+ *   opencodeBin: "/path/to/tron",
  * });
  *
  * console.log(`Server at ${handle.url}`);

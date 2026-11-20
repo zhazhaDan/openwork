@@ -1,6 +1,6 @@
 import { readdir, readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { globalOpencodeConfigDir } from "@openwork/paths";
 import type { CommandItem } from "./types.js";
 import { parseFrontmatter, buildFrontmatter } from "./frontmatter.js";
 import { exists } from "./utils.js";
@@ -60,7 +60,7 @@ async function listCommandsInDir(dir: string, scope: "workspace" | "global"): Pr
 
 export async function listCommands(workspaceRoot: string, scope: "workspace" | "global"): Promise<CommandItem[]> {
   if (scope === "global") {
-    const dir = join(homedir(), ".config", "opencode", "commands");
+    const dir = join(globalOpencodeConfigDir(), "commands");
     return listCommandsInDir(dir, "global");
   }
   return listCommandsInDir(projectCommandsDir(workspaceRoot), "workspace");

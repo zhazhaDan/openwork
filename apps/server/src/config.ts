@@ -244,7 +244,7 @@ async function loadFileConfig(configPath: string): Promise<FileConfig> {
   return parsed ?? {};
 }
 
-export async function resolveServerConfig(cli: CliArgs): Promise<ServerConfig> {
+export async function resolveServerConfig(cli: CliArgs, options: { preserveRegisteredWorkspaces?: boolean } = {}): Promise<ServerConfig> {
   const configPath = cli.configPath ?? openworkServerConfigPath();
   const fileConfig = await loadFileConfig(configPath);
   const configDir = dirname(configPath);
@@ -256,6 +256,22 @@ export async function resolveServerConfig(cli: CliArgs): Promise<ServerConfig> {
       : envWorkspaces.length > 0
         ? envWorkspaces.map((path) => ({ path }))
         : fileConfig.workspaces ?? [];
+
+  // A managed host supplies its engine bootstrap folder on every launch.
+  // Keep workspaces registered through the host API, including their IDs and metadata.
+  // Explicit workspace selection for externally managed servers still replaces the file list.
+  if (options.preserveRegisteredWorkspaces && (cli.workspaces.length > 0 || envWorkspaces.length > 0)) {
+    const saved = new Map((fileConfig.workspaces ?? [])
+      .filter(workspace => (workspace.workspaceType ?? "local") === "local")
+      .map(workspace => [resolve(configDir, workspace.path), workspace]));
+    workspaceConfigs = workspaceConfigs.map(workspace => {
+      const key = resolve(configDir, workspace.path);
+      const registered = saved.get(key);
+      saved.delete(key);
+      return registered ? { ...workspace, ...registered } : workspace;
+    });
+    workspaceConfigs.push(...saved.values());
+  }
 
   const envOpencodeBaseUrl = process.env.OPENWORK_OPENCODE_BASE_URL;
   const envOpencodeDirectory = process.env.OPENWORK_OPENCODE_DIRECTORY;

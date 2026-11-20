@@ -98,7 +98,7 @@ for (const selector of ["displayName", "ids", "batch", "default"]) {
       const response = await fetch(bridge.url, {
         method: "POST",
         headers: { Authorization: `Bearer ${bridge.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "openwork_execute", sessionId: "caller", input: {
+        body: JSON.stringify({ name: "wudong_execute", sessionId: "caller", input: {
           id: "session.create", args: {
             workspaceId: "ws1",
             ...(selector === "batch" ? { model: byName } : {}),

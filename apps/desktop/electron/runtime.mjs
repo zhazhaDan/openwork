@@ -1698,17 +1698,6 @@ export function createRuntimeManager({
     return resolveBinaryInfo(baseName, extraPaths)?.path ?? null;
   }
 
-  function resolveOpencodeBinary(opencodeBinPath) {
-    const end = startupPhase("engine.v1.resolve");
-    try { const result = resolveOpencodeBinaryInner(opencodeBinPath); end(); return result; }
-    catch (error) { end(true); throw error; }
-  }
-
-  function resolveOpencodeBinaryInner(opencodeBinPath) {
-    const explicitPath = typeof opencodeBinPath === "string" ? opencodeBinPath.trim() : "";
-    return explicitPath ? { path: explicitPath, source: "custom" } : resolveBinaryInfo("opencode");
-  }
-
   function resolveDockerCandidates() {
     const candidates = [];
     const seen = new Set();
@@ -1918,20 +1907,8 @@ export function createRuntimeManager({
 
     const host = "127.0.0.1";
 
-    const managedOpencode = options.manageOpencode ? resolveOpencodeBinary(options.opencodeBinPath) : null;
-    openworkServerState.managedOpencodeBinPath = managedOpencode?.path ?? null;
-    openworkServerState.managedOpencodeBinSource = managedOpencode?.source ?? null;
-    if (options.manageOpencode) {
-      engineState.opencodeBinPath = managedOpencode?.path ?? null;
-      engineState.opencodeBinSource = managedOpencode?.source ?? null;
-    }
-
-    // The embedded server resolves v2 independently of v1. Give both engines
-    // absolute bundled paths before loading it, never a PATH/cache download.
-    // Keep triple-name support for dev and older packaged layouts.
-    const engineEnv = bundledEngineEnv(sidecarDirs, { required: app.isPackaged });
-    if (managedOpencode) engineEnv.OPENWORK_OPENCODE_BIN = managedOpencode.path;
-    const serverEnv = await buildChildEnv(engineEnv);
+    // Pass the host's configured Tron path through to the Server.
+    const serverEnv = await buildChildEnv({});
     Object.assign(process.env, serverEnv);
 
     // Once the embedded server has a persisted registry, it is the source of
@@ -1988,7 +1965,7 @@ export function createRuntimeManager({
       opencodeDirectory: activeWorkspace || undefined,
       manageOpencode: options.manageOpencode === true,
       resumeInterruptedTasks: true,
-      opencodeBin: managedOpencode?.path ?? undefined,
+      opencodeBin: options.opencodeBinPath ?? undefined,
       opencodeCwd: managedOpencodeWorkdir(),
       localManagedMcpVaultKey,
       anonymousInference,
@@ -1996,6 +1973,12 @@ export function createRuntimeManager({
       engineAutoUpgrade: resolveDesktopEngineAutoUpgrade(),
     });
     inProcessServer = handle;
+    openworkServerState.managedOpencodeBinPath = handle.config.localTron?.bin ?? null;
+    openworkServerState.managedOpencodeBinSource = handle.config.localTron?.source ?? null;
+    if (options.manageOpencode) {
+      engineState.opencodeBinPath = handle.config.localTron?.bin ?? null;
+      engineState.opencodeBinSource = handle.config.localTron?.source ?? null;
+    }
     openworkServerState.managedOpencodeExecution = handle.managedOpencodeExecution ?? null;
     engineState.managedByServer = Boolean(handle.managedOpencode);
     engineState.managedPid = handle.managedOpencode?.pid ?? null;

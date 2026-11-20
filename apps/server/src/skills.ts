@@ -187,13 +187,26 @@ async function listSkillsInDir(dir: string, scope: "project" | "global"): Promis
 
 /** Global skill folders the skill list includes, highest priority first. */
 export function globalSkillDirectories() {
-  const home = homedir();
-  return {
-    openwork: join(home, ".config", "opencode", "skills"),
-    claude: join(home, ".claude", "skills"),
-    agents: join(home, ".agents", "skills"),
-    agentLegacy: join(home, ".agent", "skills"),
-  };
+  const home = process.env.HOME?.trim() || homedir();
+  const userHome = process.env.OPENWORK_USER_HOME?.trim() || home;
+  const homes = [...new Set([home, userHome])];
+  return homes.flatMap((root) => [
+    join(root, ".tron", "skills"),
+    join(root, ".config", "tron", "skills"),
+    join(root, ".claude", "skills"),
+    join(root, ".agents", "skills"),
+    join(root, ".agent", "skills"),
+  ]);
+}
+
+export async function listGlobalSkills(): Promise<SkillItem[]> {
+  const groups = await Promise.all(globalSkillDirectories().map((dir) => listSkillsInDir(dir, "global")));
+  const seen = new Set<string>();
+  return groups.flat().filter((item) => {
+    if (seen.has(item.name)) return false;
+    seen.add(item.name);
+    return true;
+  });
 }
 
 export async function listSkills(workspaceRoot: string, includeGlobal: boolean): Promise<SkillItem[]> {
@@ -207,8 +220,7 @@ export async function listSkills(workspaceRoot: string, includeGlobal: boolean):
   }
 
   if (includeGlobal) {
-    const global = globalSkillDirectories();
-    for (const dir of [global.openwork, global.claude, global.agents, global.agentLegacy]) dirs.push({ dir, scope: "global" });
+    for (const dir of globalSkillDirectories()) dirs.push({ dir, scope: "global" });
   }
 
   const groups = await Promise.all(dirs.map(({ dir, scope }) => listSkillsInDir(dir, scope)));

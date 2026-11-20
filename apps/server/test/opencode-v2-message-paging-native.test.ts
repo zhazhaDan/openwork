@@ -69,7 +69,7 @@ test("semantic search pages real v2 histories of 150, 200, 201, 400 and 450 mess
   const query = async (id: string, args: Record<string, unknown>): Promise<unknown> => {
     const response = await fetch(bridge.url, { method: "POST",
       headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "openwork_query", input: { id, args } }), signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({ name: "wudong_query", input: { id, args } }), signal: AbortSignal.timeout(60_000),
     });
     assert.equal(response.status, 200);
     return response.json();

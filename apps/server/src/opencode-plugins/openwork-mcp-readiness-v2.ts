@@ -6,7 +6,7 @@ type NativeMcpCatalog = {
   readonly tools: () => Effect.Effect<readonly { readonly server: string; readonly name: string }[]>;
   readonly servers: () => Effect.Effect<readonly { readonly name: string; readonly status: { readonly status: string } }[]>;
 };
-// Compatibility bridge for the officially pinned 2.0.26. Its public MCP domain
+// Compatibility bridge for verified OpenCode 2.0.26 and Tron 0.5.1. Their public MCP domain
 // omits the discovered catalog and McpTool.flush only fences startup. A scoped
 // RPC has the native location graph: read its existing client, never open a
 // second transport, resolve OAuth credentials, or spawn a stdio probe. Keep
@@ -72,7 +72,7 @@ export default {
   id: MCP_READINESS_RPC_ID,
   effect: (ctx: PluginContext) => {
     const supported = () => {
-      if (ctx.app.version !== "2.0.26") throw new Error("Review the native MCP readiness bridge before changing the engine pin");
+      if (!["2.0.26", "0.5.1"].includes(ctx.app.version)) throw new Error("Review the native MCP readiness bridge before changing the engine pin");
     };
     return ctx.rpc.register(definition, {
       catalog: Effect.fn("OpenWorkMcp.catalog")(function* (input: unknown) {

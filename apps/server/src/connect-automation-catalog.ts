@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { escapeXml, readMcpResourceText, type McpFetch } from "./connect-mcp-transport.js";
-import { readConnectCloudMcp } from "./connect-state.js";
+import { readConnectCloudMcp, readConnectState } from "./connect-state.js";
 import { readGlobalRuntimeMcpConfig, readRuntimeMcpConfig } from "./runtime-opencode-config-store.js";
 import { externalFetch } from "./server-fetch.js";
 import type { ServerConfig } from "./types.js";
@@ -79,6 +79,8 @@ export async function readOpenWorkAutomationCatalog(
   fetcher: McpFetch = externalFetch,
 ): Promise<OpenWorkAutomationIndex | null> {
   try {
+    // Disabled means no Cloud egress, even when an old MCP config remains.
+    if (!(await readConnectState(config)).connectEnabled) return null;
     const candidates: Array<Record<string, unknown>> = [];
     const globalCloud = await readGlobalRuntimeMcpConfig(config, OPENWORK_CLOUD_MCP_NAME);
     if (globalCloud) candidates.push(globalCloud);
@@ -137,7 +139,7 @@ export function renderOpenWorkAutomationInstruction(index: OpenWorkAutomationInd
   if (automations.length === 0) {
     return [
       "This member owns no Automations. If they ask what Automations they have, say there are none.",
-      "If they describe recurring work, propose one with openwork_execute id automation.propose.",
+      "If they describe recurring work, propose one with wudong_execute id automation.propose.",
     ].join("\n");
   }
   // No fetched-at stamp and no run state: those values change every run (or

@@ -56,7 +56,7 @@ test("the real native engine remembers a Drive file scope only after Allow for s
     };
     const upload = (folderId = "selected-folder", targetSessionId = sessionId, connectionId: string | null = "google-workspace") => fetch(bridge.url, {
       method: "POST", headers: { Authorization: `Bearer ${bridge.token}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000),
-      body: JSON.stringify({ name: "openwork_drive_upload", input: { path, folderId, connectionId: connectionId ?? undefined }, sessionId: targetSessionId, caller: { directory, messageId: "msg_upload", callId: "call_upload" } }),
+      body: JSON.stringify({ name: "wudong_drive_upload", input: { path, folderId, connectionId: connectionId ?? undefined }, sessionId: targetSessionId, caller: { directory, messageId: "msg_upload", callId: "call_upload" } }),
     });
     const waitForPermission = async (uploading: Promise<Response>) => {
       let early: Response | undefined;

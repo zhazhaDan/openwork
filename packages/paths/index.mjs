@@ -202,7 +202,7 @@ export function globalOpencodeConfigDir(opts) {
   const env = optionEnv(opts);
   const platform = optionPlatform(opts);
   const paths = pathApi(platform);
-  const configuredDirectory = envRawValue(env, "OPENCODE_CONFIG_DIR", opts);
+  const configuredDirectory = envRawValue(env, "TRON_CONFIG_DIR", opts);
   if (safeConfigRoot(configuredDirectory, paths)) return configuredDirectory;
 
   const configuredRoot = envRawValue(env, "XDG_CONFIG_HOME", opts);
@@ -211,15 +211,15 @@ export function globalOpencodeConfigDir(opts) {
     : paths.join(optionHomeDir(opts), ".config");
   // OpenCode accepts OPENCODE_CONFIG_DIR as the directory containing its
   // opencode.json(c) files. It is not an XDG parent directory.
-  return paths.join(configRoot, "opencode");
+  return paths.join(configRoot, "tron");
 }
 
 export function resolveGlobalOpencodeConfigPath(opts) {
   const platform = optionPlatform(opts);
   const paths = pathApi(platform);
   const base = globalOpencodeConfigDir(opts);
-  const jsonc = paths.join(base, "opencode.jsonc");
-  const json = paths.join(base, "opencode.json");
+  const jsonc = paths.join(base, "tron.jsonc");
+  const json = paths.join(base, "tron.json");
   if (existsSync(jsonc)) return jsonc;
   if (existsSync(json)) return json;
   return jsonc;
@@ -227,10 +227,10 @@ export function resolveGlobalOpencodeConfigPath(opts) {
 
 export function workspaceOpencodeConfigCandidates(workspaceRoot) {
   return [
-    path.join(workspaceRoot, "opencode.jsonc"),
-    path.join(workspaceRoot, "opencode.json"),
-    path.join(workspaceRoot, ".opencode", "opencode.jsonc"),
-    path.join(workspaceRoot, ".opencode", "opencode.json"),
+    path.join(workspaceRoot, "tron.jsonc"),
+    path.join(workspaceRoot, "tron.json"),
+    path.join(workspaceRoot, ".tron", "tron.jsonc"),
+    path.join(workspaceRoot, ".tron", "tron.json"),
   ];
 }
 

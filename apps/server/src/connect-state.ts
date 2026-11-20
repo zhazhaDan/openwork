@@ -290,6 +290,29 @@ async function resolveCloudHealth(config: ServerConfig, options: ConnectSnapshot
 export async function getConnectSnapshot(config: ServerConfig, options: ConnectSnapshotOptions = {}): Promise<ConnectSnapshot> {
   const stateInspection = await inspectConnectState(config);
   const state = stateInspection.state;
+  if (!state.connectEnabled) {
+    const resolved = resolveConnectWorkspace(config, options);
+    const workspace: ConnectSnapshot["workspace"] = "workspace" in resolved
+      ? {
+          resolution: "resolved",
+          id: resolved.workspace.id,
+          directory: resolved.directory,
+        }
+      : {
+          resolution: resolved.resolution,
+          id: null,
+          directory: resolved.directory,
+          reason: resolved.reason,
+        };
+    return {
+      status: stateInspection.status,
+      connectEnabled: false,
+      connectCatalogEnabled: false,
+      cloudMcpPresent: false,
+      cloudHealth: null,
+      workspace,
+    };
+  }
   const { cloudHealth, workspace } = await resolveCloudHealth(config, options);
 
   return {

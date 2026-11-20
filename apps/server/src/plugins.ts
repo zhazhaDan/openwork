@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { globalOpencodeConfigDir } from "@openwork/paths";
 import { join, relative } from "node:path";
 import { readdir } from "node:fs/promises";
 import type { PluginItem, ServerConfig } from "./types.js";
@@ -81,7 +81,7 @@ export async function listPlugins(serverConfig: ServerConfig, workspaceId: strin
   items.push(...(await listPluginFiles(projectDir, "project", workspaceRoot)));
 
   if (includeGlobal) {
-    const globalDir = join(homedir(), ".config", "opencode", "plugins");
+    const globalDir = join(globalOpencodeConfigDir(), "plugins");
     items.push(...(await listPluginFiles(globalDir, "global")));
   }
 

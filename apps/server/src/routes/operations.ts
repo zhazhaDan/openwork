@@ -15,9 +15,17 @@ interface RegisterOperationRoutesOptions {
   requireClientScope: (ctx: RequestContext, required: TokenScope) => void;
   resolveWorkspace: (config: ServerConfig, id: string) => Promise<WorkspaceInfo>;
   reloadOpencodeEngine: (config: ServerConfig, workspace: WorkspaceInfo) => Promise<void>;
+  syncWorkspaceConfig?: (config: ServerConfig, workspace: WorkspaceInfo) => Promise<void>;
 }
 
 export function registerOperationRoutes(options: RegisterOperationRoutesOptions): void {
+  addRoute(options.routes, "POST", "/workspace/:id/engine/sync", "client", async ctx => {
+    options.requireClientScope(ctx, "collaborator");
+    const workspace = await options.resolveWorkspace(options.config, ctx.params.id);
+    if (!options.syncWorkspaceConfig) throw new ApiError(409, "config_sync_unavailable", "Live configuration sync is unavailable");
+    await options.syncWorkspaceConfig(options.config, workspace);
+    return options.jsonResponse({ ok: true });
+  });
   const {
     routes,
     config,

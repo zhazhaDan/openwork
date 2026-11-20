@@ -37,7 +37,7 @@ async function fixture(receipt: unknown = { ok: true, result: { ok: true } }) {
 test("V2 advertises exactly the restored renderer session commands, not unrelated writes", async () => {
   const f = await fixture();
   try {
-    const response = await f.call("openwork_context", {});
+    const response = await f.call("wudong_context", {});
     assert.equal(response.status, 200);
     const context = contextSchema.parse(await response.json());
     const advertised = context.context.availableAffordances.map(action => action.id);
@@ -59,7 +59,7 @@ for (const [id, args] of [
     const receipt = { ok: true, id, result: { ok: true, sessionId: "ses_target" }, revision: 9 };
     const f = await fixture(receipt);
     try {
-      const response = await f.call("openwork_execute", { id, args, origin: { sessionId: "ses_forged" } });
+      const response = await f.call("wudong_execute", { id, args, origin: { sessionId: "ses_forged" } });
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), receipt);
       assert.deepEqual(f.commands, [{ id, args, origin: { sessionId: "ses_caller" } }]);
@@ -72,7 +72,7 @@ for (const code of ["target_working", "self_archive_while_working", "verificatio
     const receipt = { ok: false, id: "session.archive", code, error: "The target cannot be archived.", hint: "Leave it running." };
     const f = await fixture(receipt);
     try {
-      const response = await f.call("openwork_execute", { id: "session.archive", args: { sessionId: "ses_target", archived: true } });
+      const response = await f.call("wudong_execute", { id: "session.archive", args: { sessionId: "ses_target", archived: true } });
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), receipt);
     } finally { await f.bridge.close(); }
@@ -83,13 +83,13 @@ test("V2 still refuses unrelated writes, query-channel writes and browser creden
   const f = await fixture();
   try {
     for (const id of ["session.delete", "composer.send", "extension.call", "session.open", "workspace.reload_sessions"]) {
-      assert.equal((await f.call("openwork_execute", { id })).status, 400);
+      assert.equal((await f.call("wudong_execute", { id })).status, 400);
     }
-    const queried = await f.call("openwork_query", { id: "session.pin", args: { sessionId: "ses_target" } });
+    const queried = await f.call("wudong_query", { id: "session.pin", args: { sessionId: "ses_target" } });
     assert.equal(queried.status, 200);
     assert.equal(z.object({ ok: z.boolean() }).parse(await queried.json()).ok, false);
     const browser = await fetch(f.bridge.url, { method: "POST", headers: { authorization: `Bearer ${f.bridge.browser.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "openwork_execute", input: { id: "session.pin", args: { sessionId: "ses_target" } } }) });
+      body: JSON.stringify({ name: "wudong_execute", input: { id: "session.pin", args: { sessionId: "ses_target" } } }) });
     assert.equal(browser.status, 401);
     assert.deepEqual(f.commands, []);
   } finally { await f.bridge.close(); }

@@ -16,7 +16,7 @@ import type { PrepareDriveUpload } from "./extensions/approved-drive-upload.js";
 import type { FileSendApprovals, FileSendPolicy } from "./file-send-approval.js";
 
 const requestSchema = z.object({
-  name: z.enum(["openwork_context", "openwork_query", "openwork_execute", "openwork_skills", "openwork_skill_read", "openwork_drive_upload", "openwork_gmail_draft", "openwork_outlook_draft", ASK_WITHOUT_WAITING, ...DRIVE_FILE_ACTIONS]),
+  name: z.enum(["wudong_context", "wudong_query", "wudong_execute", "openwork_context", "openwork_query", "openwork_execute", "openwork_skills", "openwork_skill_read", "wudong_drive_upload", "wudong_gmail_draft", "wudong_outlook_draft", "openwork_drive_upload", "openwork_gmail_draft", "openwork_outlook_draft", ASK_WITHOUT_WAITING, ...DRIVE_FILE_ACTIONS]),
   input: z.unknown(),
   sessionId: z.string().max(256).optional(),
   // The calling tool's place in its chat, where a Drive approval is shown.
@@ -225,7 +225,19 @@ export async function createV2ContextBridge(
     try {
       const text = await request.text();
       if (text.length > 64_000) return new Response(null, { status: 413 });
-      const call = requestSchema.parse(JSON.parse(text));
+      const parsedCall = requestSchema.parse(JSON.parse(text));
+      // Accept one mixed-version handoff during desktop upgrades, but expose
+      // and route only the Wudong names inside the current runtime.
+      const call = {
+        ...parsedCall,
+        name: parsedCall.name === "openwork_context" ? "wudong_context"
+          : parsedCall.name === "openwork_query" ? "wudong_query"
+            : parsedCall.name === "openwork_execute" ? "wudong_execute"
+              : parsedCall.name === "openwork_drive_upload" ? "wudong_drive_upload"
+                : parsedCall.name === "openwork_gmail_draft" ? "wudong_gmail_draft"
+                  : parsedCall.name === "openwork_outlook_draft" ? "wudong_outlook_draft"
+                    : parsedCall.name,
+      };
       let deadline = AbortSignal.timeout(60_000);
       const read = (path: string, init?: RequestInit) => {
         const signal = AbortSignal.any([request.signal, deadline, ...(init?.signal ? [init.signal] : [])]);
@@ -280,7 +292,7 @@ export async function createV2ContextBridge(
       // Preflight one exact file before asking. The host retains its handle and
       // can grant this upload access outside workspace roots only after approval;
       // neither model args nor ordinary extension.call requests carry that grant.
-      if (call.name === "openwork_drive_upload") {
+      if (call.name === "wudong_drive_upload") {
         const args = driveUploadSchema.parse(call.input);
         if (!call.sessionId || !call.caller) throw new Error("This OpenWork engine cannot ask for your approval, so nothing was uploaded.");
         const prepared = await prepareDriveUpload?.(args, { directory: call.caller.directory }, request.signal);
@@ -342,7 +354,7 @@ export async function createV2ContextBridge(
       }
       // A Gmail draft with attachments uses the same authorized-root file
       // transport v1 fulfills, only after the person allows this draft in the calling chat.
-      if (call.name === "openwork_gmail_draft") {
+      if (call.name === "wudong_gmail_draft") {
         const args = gmailDraftSchema.parse(call.input);
         if (!call.sessionId || !call.caller) throw new Error("This OpenWork engine cannot ask for your approval, so no draft was created.");
         const metadata = {
@@ -366,7 +378,7 @@ export async function createV2ContextBridge(
       }
       // An Outlook draft with attachments uses the same authorized-root file
       // transport, only after the person allows this draft in the calling chat.
-      if (call.name === "openwork_outlook_draft") {
+      if (call.name === "wudong_outlook_draft") {
         const args = outlookDraftSchema.parse(call.input);
         if (!call.sessionId || !call.caller) throw new Error("This OpenWork engine cannot ask for your approval, so no draft was created.");
         const metadata = {
@@ -433,7 +445,7 @@ export async function createV2ContextBridge(
         // mount keep its workspace ownership checks.
         other: { engine: "v1", get: path => read(path) },
         post: async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
-          const execute = call.name === "openwork_execute";
+          const execute = call.name === "wudong_execute";
           if (execute && path !== "/experimental/ui-control/request") {
             const written = await postV2SessionWrite(path, body, (target, payload) => read(target, { method: "POST", body: JSON.stringify(payload) }));
             if (written !== undefined) return written;
@@ -445,7 +457,7 @@ export async function createV2ContextBridge(
           }
           return read(path, { method: "POST", body: JSON.stringify(body), signal });
         },
-        ...(call.name === "openwork_execute" ? {
+        ...(call.name === "wudong_execute" ? {
           send: async (method: "POST" | "PATCH" | "DELETE", path: string, body?: Record<string, unknown>) => {
             if (!isSessionGroupWritePath(path)) throw new Error("Only OpenWork session group changes are available");
             return read(path, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -453,11 +465,11 @@ export async function createV2ContextBridge(
         } : {}),
       };
       const result = await openworkReadTransport.run(transport, async () => {
-        if (call.name === "openwork_query") return plugin.tool.openwork_query.execute(call.input, call.sessionId ? { sessionID: call.sessionId } : {});
-        if (call.name === "openwork_execute") {
+        if (call.name === "wudong_query") return plugin.tool.wudong_query.execute(call.input, call.sessionId ? { sessionID: call.sessionId } : {});
+        if (call.name === "wudong_execute") {
           const id = isRecord(call.input) ? String(call.input.id) : "";
-          if (id === "session.group.list") throw new Error("session.group.list only reads. Call it with openwork_query.");
-          if (!commandIds.includes(id)) throw new Error(`${id || "This command"} is not available here. Use openwork_context to find supported commands.`);
+          if (id === "session.group.list") throw new Error("session.group.list only reads. Call it with wudong_query.");
+          if (!commandIds.includes(id)) throw new Error(`${id || "This command"} is not available here. Use wudong_context to find supported commands.`);
           const { sessionId, caller } = call;
           // Commands that ask first (answering another session's question)
           // ask in the calling chat through the engine's own prompt.
@@ -470,12 +482,12 @@ export async function createV2ContextBridge(
             // The writes after an approval get their own budget.
             deadline = AbortSignal.timeout(60_000);
           } : undefined;
-          return plugin.tool.openwork_execute.execute(call.input, { ...(sessionId ? { sessionID: sessionId } : {}), ...(ask ? { ask } : {}) });
+          return plugin.tool.wudong_execute.execute(call.input, { ...(sessionId ? { sessionID: sessionId } : {}), ...(ask ? { ask } : {}) });
         }
-        const context: unknown = JSON.parse(await plugin.tool.openwork_context.execute());
+        const context: unknown = JSON.parse(await plugin.tool.wudong_context.execute());
         const filtered = bridgeAffordances(context);
         return JSON.stringify(isRecord(filtered) ? { ...filtered, instructions: {
-          context: "Use openwork_query for discovered read-only affordances and openwork_execute for session.archive (including unarchive), session.pin (pin/unpin), session.rename, session.set_model, session.group commands, session.create, session.send, session.question.answer or automation.propose. Follow the discovered arguments and safety requirements; working sessions cannot be archived or rebound. An automation proposal only shows a review card; it does not create, activate, or run anything. When Code Mode exposes these tools, discover their exact paths with search and compose them there, preserving exceptions and verifying the resulting groups. For other conversations, use session.search then session.read. Session reads include current activity and background-agent counts."
+          context: "Use wudong_query for discovered read-only affordances and wudong_execute for session.archive (including unarchive), session.pin (pin/unpin), session.rename, session.set_model, session.group commands, session.create, session.send, session.question.answer or automation.propose. Follow the discovered arguments and safety requirements; working sessions cannot be archived or rebound. An automation proposal only shows a review card; it does not create, activate, or run anything. When Code Mode exposes these tools, discover their exact paths with search and compose them there, preserving exceptions and verifying the resulting groups. For other conversations, use session.search then session.read. Session reads include current activity and background-agent counts."
         } } : filtered);
       });
       return new Response(result, { headers: { "Content-Type": "application/json" } });

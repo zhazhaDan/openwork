@@ -53,7 +53,7 @@ test("an approved resumable Drive upload progresses beyond 130 seconds without b
   }, () => engine.connection);
   try {
     const response = await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.token}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(160_000),
-      body: JSON.stringify({ name: "openwork_drive_upload", input: { path: f.path, connectionId: "google-workspace" }, sessionId: "ses_one", caller: { directory: f.root, messageId: "msg_one", callId: "call_one" } }),
+      body: JSON.stringify({ name: "wudong_drive_upload", input: { path: f.path, connectionId: "google-workspace" }, sessionId: "ses_one", caller: { directory: f.root, messageId: "msg_one", callId: "call_one" } }),
     });
     const body: unknown = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));

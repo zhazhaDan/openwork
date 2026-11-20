@@ -12,7 +12,7 @@ export async function resolveOpencodeModelsUrl(
   options: ResolveOpencodeModelsUrlOptions = {},
 ): Promise<string> {
   const env = options.env ?? process.env;
-  const override = env.OPENCODE_MODELS_URL?.trim();
+  const override = env.TRON_MODELS_URL?.trim() || env.OPENCODE_MODELS_URL?.trim();
   if (override) return override;
   if (env.OPENWORK_DEV_MODE !== "1") return PRODUCTION_MODELS_URL;
 

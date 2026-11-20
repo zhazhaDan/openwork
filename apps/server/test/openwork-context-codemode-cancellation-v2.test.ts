@@ -11,7 +11,7 @@ test("stopped native Code Mode commands do not dispatch and propagate the cancel
     skill: { async transform() { return { async dispose() {} }; }, async reload() {} },
   });
   try {
-    const execute = tools.find(tool => tool.name === "openwork_execute");
+    const execute = tools.find(tool => tool.name === "wudong_execute");
     assert.ok(execute);
     const aborted = new Error("Stopped by the person");
     await assert.rejects(execute.execute({ id: "session.group.move", args: { sessionId: "ses_target", groupId: "done" } }, {

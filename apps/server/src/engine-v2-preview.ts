@@ -13,18 +13,16 @@ import { CONNECT_MCP_APP_HOST_CAPABILITY_HEADER, registeredOrganizationMcpServer
 import { waitForEngineSkillChanges } from "./opencode-v2-skill-settle.js";
 import { MCP_READINESS_RPC_ID } from "./opencode-v2-mcp-readiness.js";
 import { captureServerException } from "./telemetry.js";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-import constants from "../../../constants.json" with { type: "json" };
+import { configuredTron, tronHistoryDatabase, importConfiguredTronRuntime, readConfiguredEmployeeAgents } from "./local-tron.js";
 import {
   createManagedOpencodeV2Server,
   engineListsModel,
-  installOpencodeV2Binary,
   type ManagedOpencodeV2Server,
   type OpencodeV2ProviderSpec,
 } from "./managed-opencode-v2.js";
@@ -39,6 +37,7 @@ import {
   runtimeDisabledProviderList,
   runtimeMcpMap,
   runtimeProviderMap,
+  runtimePluginList,
 } from "./runtime-opencode-config-store.js";
 import type { EnvService } from "./env-file.js";
 import { selectPrimaryCredentialEnvName } from "./managed-provider-auth.js";
@@ -73,7 +72,6 @@ import { ORGANIZATION_PROVIDER_ID, organizationProviderGate } from "./organizati
 
 export type { EngineV2SkippedProvider, EngineV2SkippedProviderReason } from "./opencode-v2-local-auth.js";
 
-const OPENCODE_V2_VERSION = constants.opencodeV2Version;
 const PREVIEW_STATE_FILE = "engine-v2-preview.json";
 const UNSET_API_KEY = "openwork-engine-v2-preview-unset";
 // A cold sidecar can return HTTP 503 while its model catalog initializes for 17–20 seconds.
@@ -154,12 +152,16 @@ export interface RuntimeProviderRecordLike {
 
 export interface EngineV2Preview {
   start(): void;
+  ready(): Promise<void>;
   setForcePolicy(policy: { upgrade: boolean }): EngineV2PreviewStatus;
   status(): EngineV2PreviewStatus;
   setEnabled(enabled: boolean): Promise<EngineV2PreviewStatus>;
   setChatRouting(chatRouting: boolean): Promise<EngineV2PreviewStatus>;
   connection(): { url: string; username: string; password: string } | undefined;
   ensureWorkspaceReady(directory: string): Promise<void>;
+  syncEmployeeAgents(): Promise<void>;
+  reloadWorkspace(workspaceId: string, directory: string): Promise<void>;
+  syncWorkspaceConfig(workspaceId: string, directory: string): Promise<void>;
   refreshProviders(): Promise<void>;
   /**
    * Reconcile a folder's MCP connections with the engine: register new or
@@ -341,42 +343,11 @@ export async function writeEngineV2PreviewState(
   await rename(temporary, path);
 }
 
-function exec(file: string, args: string[], options: { cwd?: string; timeout?: number } = {}): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
 async function resolveBinary(config: ServerConfig): Promise<ResolvedBinary> {
-  return startupPhase("engine.v2.resolve", () => resolveBinaryInner(config));
+  return startupPhase("engine.v2.resolve", async () => config.localTron ?? configuredTron());
 }
 
-async function resolveBinaryInner(config: ServerConfig): Promise<ResolvedBinary> {
-  const override = process.env.OPENWORK_OPENCODE2_BIN?.trim();
-  if (override) return { bin: override, source: "env" };
-
-  let pathError = "not found";
-  try {
-    await startupPhase("engine.v2.version-probe", () => exec("opencode2", ["--version"]));
-    return { bin: "opencode2", source: "path" };
-  } catch (error) {
-    pathError = errorMessage(error);
-  }
-
-  try {
-    const binary = await installOpencodeV2Binary(join(runtimeStorageDir(config), "opencode-v2-verified"), OPENCODE_V2_VERSION);
-    return { bin: binary, source: "cache" };
-  } catch (error) {
-    throw new Error(
-      `Unable to resolve OpenCode v2 (${pathError}; verified download: ${errorMessage(error)}). ${BINARY_OVERRIDE_ADVICE}`,
-    );
-  }
-}
-
-const BINARY_OVERRIDE_ADVICE = "Set OPENWORK_OPENCODE2_BIN to a working opencode2 binary to override resolution.";
+const BINARY_OVERRIDE_ADVICE = "Supply the Tron engine path through opencodeBin or OPENWORK_OPENCODE_BIN in the startup configuration.";
 
 /**
  * Only failures to find or run the engine executable suggest a different
@@ -384,7 +355,7 @@ const BINARY_OVERRIDE_ADVICE = "Set OPENWORK_OPENCODE2_BIN to a working opencode
  */
 export function engineStartErrorMessage(error: unknown): string {
   const message = errorMessage(error);
-  if (message.includes("OPENWORK_OPENCODE2_BIN")) return message;
+  if (message.includes("OPENWORK_OPENCODE_BIN")) return message;
   const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
   const binary = code === "ENOENT" || code === "EACCES" || code === "ENOEXEC" || code === "EPERM"
     || /^Failed to start OpenCode v2 server|^OpenCode v2 server exited with code|^Timed out waiting \d+ms for OpenCode v2 health|unexpected listener|\bspawn\b|ENOENT|EACCES|ENOEXEC/.test(message);
@@ -661,7 +632,8 @@ export function mapRuntimeMcpToV2(value: unknown, name?: string): Record<string,
   const shared = {
     ...(typeof value.codemode === "boolean" ? { codemode: value.codemode } : {}),
     ...(typeof value.timeout === "number" && value.timeout > 0
-      ? { timeout: { startup: value.timeout, catalog: value.timeout, execution: value.timeout } } : {}),
+      ? { timeout: { startup: value.timeout, catalog: value.timeout, execution: value.timeout } }
+      : isRecord(value.timeout) ? { timeout: value.timeout } : {}),
   };
   const strings = (input: unknown) => isRecord(input)
     ? Object.fromEntries(Object.entries(input).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
@@ -672,8 +644,8 @@ export function mapRuntimeMcpToV2(value: unknown, name?: string): Record<string,
   }
   if (value.type !== "remote" || typeof value.url !== "string" || !/^https?:\/\//i.test(value.url)) return undefined;
   const oauth = isRecord(value.oauth) ? {
-    ...(typeof value.oauth.clientId === "string" ? { client_id: value.oauth.clientId } : {}),
-    ...(typeof value.oauth.clientSecret === "string" ? { client_secret: value.oauth.clientSecret } : {}),
+    ...(typeof (value.oauth.client_id ?? value.oauth.clientId) === "string" ? { client_id: value.oauth.client_id ?? value.oauth.clientId } : {}),
+    ...(typeof (value.oauth.client_secret ?? value.oauth.clientSecret) === "string" ? { client_secret: value.oauth.client_secret ?? value.oauth.clientSecret } : {}),
     ...(typeof value.oauth.scope === "string" ? { scope: value.oauth.scope } : {}),
   } : value.oauth === false ? false : undefined;
   const headers = strings(value.headers);
@@ -741,17 +713,19 @@ export function createEngineV2Preview(options: {
 }): EngineV2Preview {
   const { config } = options;
   const waits = { ...ENGINE_V2_UPKEEP_WAITS, ...options.waits };
-  const rootDir = join(runtimeStorageDir(config), "opencode-v2", "state");
+  const rootDir = join(runtimeStorageDir(config), config.localTron ? "tron" : "opencode-v2", "state");
   const workspaceDir = join(rootDir, "workspace");
   seedFreshInstallEngineState(config);
-  const initialState = resolveInitialEngineV2PreviewState(process.env, readEngineV2PreviewState(config));
+  const initialState: EngineV2PreviewState = config.localTron
+    ? { enabled: true, chatRouting: true, engineOrigin: "forced", engineForced: true }
+    : resolveInitialEngineV2PreviewState(process.env, readEngineV2PreviewState(config));
   let engineOrigin: EngineOrigin = initialState.engineOrigin ?? "manual";
   let engineChangedAt = initialState.engineChangedAt;
   let engineForced = initialState.engineForced === true;
   // Only engines using this host's history can be migrated automatically. The
   // bootstrap ownership snapshot survives managed global/workspace URL hydration.
   // An explicit saved/pinned engine still wins; legacy policy cannot undo it.
-  const autoUpgradeEnabled = !hasExternalOpencode(config) && config.engineAutoUpgrade !== false && !process.env.OPENWORK_ENGINE_V2_PREVIEW?.trim();
+  const autoUpgradeEnabled = !config.localTron && !hasExternalOpencode(config) && config.engineAutoUpgrade !== false && !process.env.OPENWORK_ENGINE_V2_PREVIEW?.trim();
   let autoUpgradeRetry = initialState.autoUpgradeRetry;
   const autoUpgradeAbort = new AbortController();
   let autoUpgradeJob: Promise<void> | undefined;
@@ -762,12 +736,13 @@ export function createEngineV2Preview(options: {
   const ownsGateway = () => options.providerSession !== undefined;
   // The organization rollout, applied by the server once Den answers. Never
   // persisted, so a revoked rollout or an offline start cannot keep it on.
-  let v2Only = false;
+  let v2Only = Boolean(config.localTron);
   let v2OnlyJob: Promise<void> | undefined;
   let v1UnavailableReason: string | undefined;
   const adoptedHistoryReason = "This history has been opened by OpenCode v2. Switching to v1 would leave new chats outside v2 history.";
   let selectedHistoryDatabase = initialState.historyDatabase;
   async function selectHistoryDatabase(): Promise<string> {
+    if (config.localTron) return tronHistoryDatabase();
     if (!selectedHistoryDatabase) {
       selectedHistoryDatabase = await resolveOpencodeHistoryDatabase(rootDir);
       // A path receipt, not a migration checkpoint: never switch databases
@@ -968,6 +943,7 @@ export function createEngineV2Preview(options: {
   }
 
   function checkMcpHealth(): void {
+    if (config.localTron) void importConfiguredTronRuntime(config).catch(error => warn(`Configuration: ${errorMessage(error)}`));
     for (const [directory, location] of mcpLocations) {
       void syncWorkspaceMcp(location.workspaceId, directory).catch((error) => warn(`MCP: ${errorMessage(error)}`));
     }
@@ -1037,6 +1013,16 @@ export function createEngineV2Preview(options: {
       ? new Map([...localAuth.apiKeys].filter(([id]) => allowsProvider(id)))
       : localAuth.apiKeys;
     const credentials = new Map((await options.env?.list() ?? []).map((entry) => [entry.key, entry.value]));
+    // The desktop passes credentials through its existing startup environment.
+    // Read only names explicitly declared by a local host provider.
+    if (config.localTron) for (const definition of Object.values(configured)) {
+      if (!isRecord(definition) || !Array.isArray(definition.env)) continue;
+      for (const name of definition.env) {
+        if (typeof name !== "string" || !/^[A-Z0-9_]+_API_KEY$/.test(name) || credentials.has(name)) continue;
+        const value = process.env[name];
+        if (value) credentials.set(name, value);
+      }
+    }
     // Providers the engine's own catalog knows need only a key from us.
     const native = await readEngineV2NativeProviders(active);
     // v1 reads catalog keys from its environment: the server's, plus Settings › Environment.
@@ -1175,17 +1161,21 @@ export function createEngineV2Preview(options: {
       contextTools: contextBridge,
       ...(providerSessionBridge ? { providerSession: providerSessionBridge } : {}),
       bin: resolved.bin,
+      cwd: config.localTron?.cwd,
+      ...(config.localTron ? { hostDiscovery: async () => ({
+        plugins: runtimePluginList(await readGlobalRuntimeOpencodeConfig(config)),
+        agents: await readConfiguredEmployeeAgents(),
+      }) } : {}),
       rootDir,
       instanceId: engineInstanceId(),
-      env: { OPENCODE_MODELS_URL: opencodeModelsUrl },
+      env: { TRON_MODELS_URL: opencodeModelsUrl },
       permissions: async () => {
         const runtime = await readGlobalRuntimeOpencodeConfig(config);
         return executionRules(runtime.managedPolicy?.execution);
       },
-      // The engine reads ~/.claude/skills and ~/.agents/skills itself, but its
-      // config folder is OpenWork's own, so it never sees these two global
-      // folders the skill picker lists, and a picked skill there can't be sent.
-      skills: [globalSkills.openwork, globalSkills.agentLegacy],
+      // Tron uses a private config directory. Register the same global roots
+      // that the skill picker scans, including the desktop installation root.
+      skills: globalSkills,
       agentPermissions: async () => {
         const rules = agentPermissionRulesOf((await readGlobalRuntimeOpencodeConfig(config)).managedPolicy);
         if (rules.length === 0) return { rules, organizationMcp: {} };
@@ -1207,6 +1197,7 @@ export function createEngineV2Preview(options: {
       healthySince = Date.now();
       lastError = undefined;
       const unsubscribeConfig = onRuntimeOpencodeConfigWrite((_writeConfig, workspaceId) => {
+        if (_writeConfig !== config) return;
         const global = isEngineGlobalRuntimeConfigId(workspaceId);
         if (global) scheduleMirror();
         // Connections installed through OpenWork also update already-open
@@ -1301,6 +1292,7 @@ export function createEngineV2Preview(options: {
   }
 
   async function requireV1Allowed(): Promise<void> {
+    if (config.localTron) throw new ApiError(409, "tron_only", "This server uses local Tron. OpenCode is disabled.");
     if (v2Only) {
       throw new ApiError(409, "engine_v2_only", "Your organization runs every chat on OpenCode v2. Switching to OpenCode v1 is turned off.");
     }
@@ -1403,6 +1395,57 @@ export function createEngineV2Preview(options: {
     void syncWorkspaceMcp(workspaceId, directory).catch((error) => warn(`MCP: ${errorMessage(error)}`));
   }
 
+  async function syncEmployeeAgents(): Promise<void> {
+    if (config.localTron) await sidecar?.refreshConfig();
+  }
+
+  async function reloadWorkspace(workspaceId: string, directory: string): Promise<void> {
+    if (config.localTron) await importConfiguredTronRuntime(config);
+    const active = sidecar;
+    if (!active) throw new ApiError(503, "tron_unavailable", "Tron is not running");
+    await refreshProviders();
+    await active.refreshConfig();
+    await mcpLocations.get(directory)?.tail;
+    const execution = await active.fetchJson("/api/session/active", { directory });
+    const running = isRecord(execution.json) && isRecord(execution.json.data) ? execution.json.data : {};
+    for (const id of Object.keys(running)) {
+      const session = await active.fetchJson(`/api/session/${encodeURIComponent(id)}`, { directory });
+      const info = isRecord(session.json) && isRecord(session.json.data) ? session.json.data : undefined;
+      if (info && isRecord(info.location) && info.location.directory === directory) {
+        throw new ApiError(409, "workspace_busy", "Configuration is saved. Apply it after this workspace finishes its current task.");
+      }
+    }
+    for (const path of ["/api/form", "/api/permission/request"]) {
+      const pending = await active.fetchJson(path, { directory });
+      if (pending.status !== 200) throw new ApiError(502, "tron_reload_failed", "Could not check pending workspace requests");
+      const data = isRecord(pending.json) ? pending.json.data : pending.json;
+      if (Array.isArray(data) && data.length) throw new ApiError(409, "workspace_busy", "Configuration is saved. Resolve pending requests before applying it.");
+    }
+    const result = await active.fetchJson("/api/debug/location", { method: "DELETE", directory, timeoutMs: 30_000 });
+    if (result.status !== 204) throw new ApiError(502, "tron_reload_failed", "Tron could not reload this workspace");
+    workspaceReadiness.delete(directory);
+    mcpLocations.delete(directory);
+    await ensureWorkspaceReady(directory);
+    await syncWorkspaceMcp(workspaceId, directory);
+    const inventory = await readEffectiveRuntimeOpencodeConfig(config, workspaceId);
+    for (const name of Object.keys(runtimeMcpMap(inventory))) await settleWorkspaceMcp(workspaceId, directory, name);
+  }
+
+  async function syncWorkspaceConfig(workspaceId: string, directory: string): Promise<void> {
+    const locations = new Map([...mcpLocations].map(([path, location]) => [path, location.workspaceId]));
+    locations.set(directory, workspaceId);
+    const previous = new Map<string, string[]>();
+    for (const [path, id] of locations) previous.set(path, Object.keys(runtimeMcpMap(await readEffectiveRuntimeOpencodeConfig(config, id))));
+    if (config.localTron) await importConfiguredTronRuntime(config);
+    await refreshProviders();
+    await sidecar?.refreshConfig();
+    for (const [path, id] of locations) {
+      await syncWorkspaceMcp(id, path);
+      const names = new Set([...previous.get(path) ?? [], ...Object.keys(runtimeMcpMap(await readEffectiveRuntimeOpencodeConfig(config, id)))]);
+      for (const name of names) await settleWorkspaceMcp(id, path, name);
+    }
+  }
+
   // When v2 serves chats, open the active workspace as soon as the sidecar is
   // up, so the window's first model read does not wait on the location's setup.
   function warmActiveWorkspace(): void {
@@ -1460,6 +1503,7 @@ export function createEngineV2Preview(options: {
   }
 
   async function setV2Only(next: boolean): Promise<EngineV2PreviewStatus> {
+    if (config.localTron) return status();
     // A policy refresh must still retry a switch deferred by running v1 work.
     const needsSwitch = next && !chatRouting;
     if (v2Only === next && !needsSwitch) return status();
@@ -1503,5 +1547,5 @@ export function createEngineV2Preview(options: {
     } else if (enabled && engineOrigin !== "reverted" && !(autoUpgradeEnabled && !chatRouting && !chosenV1Manually())) void start().catch(recordStartError);
   }
   if (!options.deferStart) startWhenReady();
-  return { start: startWhenReady, setForcePolicy, setV2Only, status, setEnabled, setChatRouting, connection, ensureWorkspaceReady, refreshProviders, syncWorkspaceMcp, settleWorkspaceMcp, warmWorkspace, settleWorkspaceSkills, stop };
+  return { start: startWhenReady, ready: start, setForcePolicy, setV2Only, status, setEnabled, setChatRouting, connection, ensureWorkspaceReady, syncEmployeeAgents, reloadWorkspace, syncWorkspaceConfig, refreshProviders, syncWorkspaceMcp, settleWorkspaceMcp, warmWorkspace, settleWorkspaceSkills, stop };
 }

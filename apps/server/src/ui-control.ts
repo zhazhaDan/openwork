@@ -21,7 +21,7 @@ export class UiControlMailbox {
     if (!this.connected()) {
       return Promise.resolve({
         ok: false,
-        error: "No OpenWork window is connected to this server. Open the OpenWork app or its web tab and try again.",
+        error: "No Wudong window is connected to this server. Open the Wudong app and try again.",
       });
     }
 

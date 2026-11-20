@@ -1,0 +1,3 @@
+
+# Rebuilt from the upstream UI adapter by scripts/build-tron-client.ts
+src/tron-compat/client.js

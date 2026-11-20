@@ -1,4 +1,4 @@
-import { envKey, setEnv } from "@openwork/paths";
+import { envKey, setEnv, globalOpencodeConfigDir } from "@openwork/paths";
 import { startupPhase } from "./startup-phase.js";
 import type { EnginePermissionRule } from "./managed-policy-rules.js";
 import { agentPermissionEngineV2Rules, type AgentPermissionRule, type EngineV2PermissionRule } from "./agent-permission-engine.js";
@@ -12,13 +12,11 @@ import { pathToFileURL } from "node:url";
 // deliberately has no reload/dispose call, unlike managed-opencode.ts and server.ts reloadOpencodeEngine.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile, symlink, lstat, readlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { appendEngineOutputTail, createEngineStartupLineReader } from "./engine-output.js";
-import { resolveOpencodeHistoryDatabase } from "./opencode-history.js";
+import { tronHistoryDatabase } from "./local-tron.js";
 import { providerCredentialBrokerSource } from "./opencode-v2-provider-channel.js";
-
-export { installOpencodeV2Binary } from "./opencode-v2-binary.js";
 
 import { loopbackFetch } from "./server-fetch.js";
 
@@ -50,6 +48,7 @@ export interface OpencodeV2ProviderSpec {
 
 export interface ManagedOpencodeV2ServerOptions {
   bin: string;
+  cwd?: string;
   rootDir: string;
   /** A history path already selected by the owning host. */
   historyDatabase?: string;
@@ -73,6 +72,8 @@ export interface ManagedOpencodeV2ServerOptions {
   permissions?: () => Promise<EnginePermissionRule[]>;
   /** Extra absolute skill directories registered before boot, so no later config write reloads the catalog. */
   skills?: string[];
+  /** Host global discovery remains separate from the generated private config. */
+  hostDiscovery?: () => Promise<{ plugins: string[]; agents?: Record<string, unknown> }>;
   /**
    * The signed-in member's agent permissions, which the engine and the agent
    * permissions plugin apply, with the organization MCP servers OpenWork
@@ -241,6 +242,8 @@ export function renderOpencodeV2Config(input: {
   disabledProviderIds?: string[];
   permissions?: EnginePermissionRule[];
   skills: string[];
+  hostPlugins?: string[];
+  hostAgents?: Record<string, unknown>;
   gatewayQuotaPluginDirectory?: string;
   providerSyncPluginDirectory?: string;
   desktopSession?: string;
@@ -325,6 +328,7 @@ export function renderOpencodeV2Config(input: {
   // disconnected OpenCode Zen disappears here too and returns once re-enabled.
   for (const id of disabled) filters[id] = { whitelist: [] };
   const plugins = [
+    ...(input.hostPlugins ?? []).map(packageName => ({ package: packageName })),
     ...(input.desktopSession && input.providerSyncPluginDirectory ? [{
       package: pathToFileURL(input.providerSyncPluginDirectory).href,
       options: { desktopSession: input.desktopSession },
@@ -362,6 +366,7 @@ export function renderOpencodeV2Config(input: {
   return {
     $schema: "https://opencode.ai/config.json",
     providers: providerConfig,
+    ...(input.hostAgents && Object.keys(input.hostAgents).length ? { agents: input.hostAgents } : {}),
     ...(plugins.length ? { plugins } : {}),
     ...(input.permissions || permissions.length ? { permissions } : {}),
     ...(input.skills.length ? { skills: [...input.skills] } : {}),
@@ -382,6 +387,7 @@ const ENGINE_INHERITED_ENV = [
   "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
   // Executable location only: Claude Code owns its login and tokens.
   "OPENCODE_CLAUDE_PATH",
+  "WUDONG_BROWSER_HTTP_ENDPOINT", "WUDONG_BROWSER_TOKEN",
 ];
 
 /** Caller values win; on Windows each name matches any spelling (`Path`, `windir`) and is passed once. */
@@ -438,16 +444,25 @@ async function createManagedOpencodeV2ServerInner(
   // Declared before the boot config write, which reads it when the member
   // already has stored agent permissions.
   let agentPermissionsPluginWritten = false;
-  const opencodeModelsUrl = (options.env?.OPENCODE_MODELS_URL ?? process.env.OPENCODE_MODELS_URL)?.replace(/\/+$/, "");
+  const opencodeModelsUrl = (options.env?.TRON_MODELS_URL ?? process.env.TRON_MODELS_URL)?.replace(/\/+$/, "");
   const inherited = inheritedEngineEnv(options.env);
-  // A caller may deliberately provide a config file; never inherit the server's
-  // OPENCODE_CONFIG or OPENCODE_PURE settings implicitly.
-  if (options.env?.OPENCODE_CONFIG) inherited.OPENCODE_CONFIG = options.env.OPENCODE_CONFIG;
+  // Only an explicit engine config is allowed through the environment boundary.
+  if (options.env?.TRON_CONFIG) inherited.TRON_CONFIG = options.env.TRON_CONFIG;
 
   await mkdir(options.rootDir, { recursive: true, mode: 0o700 });
   await chmod(options.rootDir, 0o700);
   await mkdir(configDir, { recursive: true, mode: 0o700 });
   await chmod(configDir, 0o700);
+  const hostRoot = globalOpencodeConfigDir();
+  for (const name of ["commands", "plugins"]) {
+    const source = join(hostRoot, name);
+    const destination = join(configDir, name);
+    await mkdir(source, { recursive: true });
+    const existing = await lstat(destination).catch(() => undefined);
+    if (existing?.isSymbolicLink() && await readlink(destination) !== source) await unlink(destination);
+    else if (existing) continue;
+    await symlink(source, destination, process.platform === "win32" ? "junction" : "dir");
+  }
   if (options.providerSession) {
     await mkdir(providerSyncPluginDirectory, { recursive: true, mode: 0o700 });
     await writeFile(providerCredentialBrokerPath, providerCredentialBrokerSource, { mode: 0o600 });
@@ -491,16 +506,17 @@ async function createManagedOpencodeV2ServerInner(
   // Cloud skills use Connect on demand, just like v1. No generated Cloud
   // skill directory is registered with the native engine.
   await writeConfig();
-  const historyDatabase = options.historyDatabase ?? await resolveOpencodeHistoryDatabase(options.rootDir);
+  const historyDatabase = options.historyDatabase ?? tronHistoryDatabase();
   const child = spawn(options.bin, ["serve", "--hostname", hostname, "--port", String(port)], {
+    cwd: options.cwd,
     env: {
       ...inherited,
-      ...(options.env?.OPENCODE_DISABLE_MODELS_FETCH ? { OPENCODE_DISABLE_MODELS_FETCH: options.env.OPENCODE_DISABLE_MODELS_FETCH } : {}),
+      ...(options.env?.TRON_MODELS_FETCH ? { TRON_MODELS_FETCH: options.env.TRON_MODELS_FETCH } : {}),
       ...(options.providerSession ? { OPENWORK_PROVIDER_SESSION_FD: "3", OPENWORK_PROVIDER_SESSION_BROKER: providerCredentialBrokerPath } : {}),
-      OPENCODE_PASSWORD: password,
-      OPENCODE_DB: historyDatabase,
-      OPENCODE_CONFIG_DIR: configDir,
-      ...(opencodeModelsUrl === undefined ? {} : { OPENCODE_MODELS_URL: opencodeModelsUrl }),
+      TRON_PASSWORD: password,
+      TRON_DB: historyDatabase,
+      TRON_CONFIG_DIR: configDir,
+      ...(opencodeModelsUrl === undefined ? {} : { TRON_MODELS_URL: opencodeModelsUrl }),
     },
     stdio: ["ignore", "pipe", "pipe", options.providerSession ? "pipe" : "ignore"],
   });
@@ -588,7 +604,8 @@ async function createManagedOpencodeV2ServerInner(
   }
 
   async function writeConfigNow(): Promise<void> {
-    const target = join(configDir, "opencode.json");
+    const target = join(configDir, "tron.json");
+    const host = await options.hostDiscovery?.();
     const next = `${JSON.stringify(renderOpencodeV2Config({
       providers: [...providers.values()],
       disabledProviderIds,
@@ -605,6 +622,7 @@ async function createManagedOpencodeV2ServerInner(
       ...(options.permissions ? { permissions: await options.permissions() } : {}),
       ...(options.agentPermissions ? await agentPermissionsConfig(options.agentPermissions) : {}),
       skills,
+      ...(host ? { hostPlugins: host.plugins, hostAgents: host.agents } : {}),
     }), null, 2)}\n`;
     // The engine watches this file and reloads its model catalog on every
     // change; an identical rewrite would only open a window where models are

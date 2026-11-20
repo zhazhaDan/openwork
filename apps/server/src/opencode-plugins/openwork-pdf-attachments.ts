@@ -30,7 +30,7 @@ import { looksLikePdf, withPdfDocument } from "../pdf-attachments/pdfium.js";
  * - Models that accept PDF input receive the PDF as-is, within the provider's
  *   per-request page and byte limits counted across every PDF in the step.
  * - Models that accept images receive rendered page images plus page-marked
- *   text; further pages come from the `openwork_pdf_pages` tool on demand.
+ *   text; further pages come from the `wudong_pdf_pages` tool on demand.
  * - Text-only models receive the page-marked text, with an honest note about
  *   pages that have no text layer.
  * - Oversized, encrypted, or corrupt PDFs become a clear note instead of a
@@ -47,7 +47,7 @@ const MAX_INLINE_PAGES = EAGER_RENDERED_PAGES;
 const INLINE_IMAGE_BUDGET_BYTES = 12 * MIB;
 /** Extracted text inlined in the note; the full text stays on disk. */
 const MAX_INLINE_TEXT_CHARS = 60_000;
-const PAGE_TOOL_NAME = "openwork_pdf_pages";
+const PAGE_TOOL_NAME = "wudong_pdf_pages";
 
 type RuntimeContext = {
   directory?: string;

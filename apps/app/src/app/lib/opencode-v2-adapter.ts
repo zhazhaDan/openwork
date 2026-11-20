@@ -6,6 +6,7 @@ import type {
   Model,
   Part,
   PermissionRequest,
+  PermissionRuleset,
   PermissionV2Request,
   Provider,
   ProviderListResponse,
@@ -208,10 +209,12 @@ type PromptParameters = SessionParameters & {
 type SessionCreateParameters = DirectoryParameters & {
   model?: ModelBinding;
   title?: string;
+  permission?: PermissionRuleset;
 };
 
 type SessionUpdateParameters = SessionParameters & {
   title?: string;
+  permission?: PermissionRuleset;
   time?: { archived?: number };
 };
 
@@ -529,6 +532,11 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
   const variant = readString(model, "variant");
   const revert = readRecord(source, "revert");
   const revertMessageID = revert && readString(revert, "messageID");
+  const permission: PermissionRuleset = responseItems(source.permissions).flatMap((rule) => {
+    if (!isRecord(rule) || typeof rule.action !== "string" || typeof rule.resource !== "string"
+      || !["allow", "ask", "deny"].includes(String(rule.effect))) return [];
+    return [{ permission: rule.action, pattern: rule.resource, action: rule.effect as "allow" | "ask" | "deny" }];
+  });
   const mapped: Session = {
     id,
     slug: readString(source, "slug") ?? id,
@@ -537,6 +545,7 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
     // Keep native untitled sessions eligible for compatibility title recovery.
     title: readString(source, "title") || `New session - ${new Date(created).toISOString()}`,
     version: readString(source, "version") ?? "v2",
+    permission,
     // Before 2.1 the engine cannot unarchive, so an archive time (only ever
     // copied from v1 history) would lock the chat read-only forever. Callers
     // show it only when the engine can restore it.
@@ -547,6 +556,9 @@ function mapV2Session(value: unknown, directory: string | undefined, eventCreate
     } : {}),
     ...(revertMessageID ? { revert: { messageID: revertMessageID } } : {}),
   };
+  if (["succeeded", "failed", "interrupted"].includes(String(source.outcome))) {
+    Object.assign(mapped, { outcome: source.outcome });
+  }
   // Smart replies' routing decisions ride along for the chat's "answered by" label.
   const autoRoutes = autoRouterReplyRoutes(readRecord(source, "metadata")?.[AUTO_ROUTER_SESSION_ROUTES_KEY]);
   return autoRoutes.length ? Object.assign(mapped, { [AUTO_ROUTER_SESSION_ROUTES_KEY]: autoRoutes }) : mapped;
@@ -557,7 +569,7 @@ function messageRole(value: Record<string, unknown>): V2MessageRole {
   if (raw === "user") return "user";
   // OpenCode 2.1+ ends every turn with an `idle` marker; like compaction it is
   // bookkeeping, not a visible message.
-  if (raw === "system" || raw === "synthetic" || raw === "compaction" || raw === "idle") return "system";
+  if (raw === "system" || raw === "synthetic" || raw === "compaction" || raw === "idle" || raw === "model-switched" || raw === "agent-switched") return "system";
   return "assistant";
 }
 
@@ -2637,6 +2649,9 @@ export function createClientV2(
     const result = await request("POST", "/api/session", {
       ...(model ? { model } : {}),
       ...(parameters.title === undefined ? {} : { title: parameters.title }),
+      ...(parameters.permission === undefined ? {} : { permissions: parameters.permission.map(rule => ({
+        action: rule.permission, resource: rule.pattern, effect: rule.action,
+      })) }),
       ...(location ? { location: { directory: location } } : {}),
     }, options?.signal);
     if (!result.response.ok) return failedResult(result);
@@ -2646,6 +2661,16 @@ export function createClientV2(
   };
 
   const session = {
+    retry: async (parameters: SessionParameters, options?: RequestOptions) => {
+      const result = await request("POST", `/api/session/${encodeURIComponent(parameters.sessionID)}/retry`, undefined, options?.signal);
+      return result.response.ok ? successfulResult(result, { result: responseData(result.payload) }) : failedResult(result);
+    },
+    diff: async (parameters: SessionParameters & { messageID?: string }, options?: RequestOptions) => {
+      const query = new URLSearchParams();
+      if (parameters.messageID) query.set("from", parameters.messageID);
+      const result = await request("GET", `/api/session/${encodeURIComponent(parameters.sessionID)}/diff${query.size ? `?${query}` : ""}`, undefined, options?.signal);
+      return result.response.ok ? successfulResult(result, responseData(result.payload)) : failedResult(result);
+    },
     list: async (
       parameters: DirectoryParameters & { limit?: number; cursor?: string } = {},
       options?: RequestOptions,
@@ -2690,7 +2715,7 @@ export function createClientV2(
       parameters: SessionParameters & { limit?: number; before?: string },
       options?: RequestOptions,
     ): Promise<FieldsResult<V2MappedMessage[]> & Pick<OpenworkSessionHistory, "pagination">> => {
-      const limit = parameters.limit === undefined ? undefined : Math.min(parameters.limit, 200);
+      const limit = parameters.limit;
       if ((parameters.limit !== undefined && (!Number.isInteger(parameters.limit) || parameters.limit <= 0))
         || (parameters.before !== undefined && limit === undefined)) {
         throw new Error("A session history page requires a positive integer limit.");
@@ -2702,7 +2727,7 @@ export function createClientV2(
       while (true) {
         options?.signal?.throwIfAborted();
         const query = new URLSearchParams();
-        if (limit !== undefined) query.set("limit", String(limit));
+        if (limit !== undefined) query.set("limit", String(Math.min(limit - data.length, 200)));
         if (before !== undefined) query.set("cursor", before);
         const suffix = query.size ? `?${query.toString()}` : "";
         const result = await request(
@@ -2732,7 +2757,7 @@ export function createClientV2(
           const mapped = mapV2Message(item, parameters.sessionID, taskSessions);
           return mapped ? [mapped] : [];
         }));
-        if (limit !== undefined) {
+        if (limit !== undefined && (data.length >= limit || typeof next !== "string")) {
           return {
             ...successfulResult(result, hasCursor ? data.toReversed() : data),
             ...(hasCursor ? { pagination: { before: parameters.before, nextCursor: typeof next === "string" ? next : null, limit } } : {}),
@@ -2743,8 +2768,22 @@ export function createClientV2(
         before = next;
       }
     },
-    todo: async (parameters: SessionParameters): Promise<FieldsResult<never[]>> =>
-      localResult(baseUrl, `/api/session/${encodeURIComponent(parameters.sessionID)}/todo`, []),
+    todo: async (parameters: SessionParameters, options?: RequestOptions) => {
+      const history = await session.messages(parameters, options);
+      if (!history.response.ok || !history.data) return history;
+      for (const message of history.data.toReversed()) {
+        for (const part of message.parts.toReversed()) {
+          if (part.type !== "tool" || part.tool !== "todowrite" || part.state.status !== "completed") continue;
+          const input = part.state.input;
+          if (!isRecord(input) || !Array.isArray(input.todos)) continue;
+          return { ...history, data: input.todos.flatMap((item, index) => {
+            if (!isRecord(item) || typeof item.content !== "string" || typeof item.status !== "string") return [];
+            return [{ id: String(index), content: item.content, status: item.status, priority: "medium" }];
+          }) };
+        }
+      }
+      return { ...history, data: [] };
+    },
     status: async (
       _parameters: DirectoryParameters = {},
       options?: RequestOptions,
@@ -2898,12 +2937,15 @@ export function createClientV2(
     ): Promise<FieldsResult<Session>> => {
       // v1 callers archive by stamping `time.archived` (0 restores); v2 takes a boolean.
       const archived = parameters.time?.archived;
-      if (!parameters.title && archived === undefined) return getSession(parameters, options);
+      if (!parameters.title && archived === undefined && parameters.permission === undefined) return getSession(parameters, options);
       const result = await request(
         "PATCH",
         `/api/session/${encodeURIComponent(parameters.sessionID)}`,
         {
           ...(parameters.title ? { title: parameters.title } : {}),
+          ...(parameters.permission === undefined ? {} : { permissions: parameters.permission.map(rule => ({
+            action: rule.permission, resource: rule.pattern, effect: rule.action,
+          })) }),
           ...(archived === undefined ? {} : { archived: archived > 0 }),
         },
         options?.signal,
@@ -3186,7 +3228,17 @@ export function createClientV2(
       },
     },
     find: {
-      files: async (): Promise<FieldsResult<never[]>> => localResult(baseUrl, "/api/fs/find", []),
+      files: async (parameters: DirectoryParameters & { query?: string; dirs?: string | boolean; type?: string; limit?: number } = {}, options?: RequestOptions): Promise<FieldsResult<string[]>> => {
+        const query = new URLSearchParams({ query: parameters.query ?? "", limit: String(parameters.limit ?? 50) });
+        if (parameters.type) query.set("type", parameters.type);
+        else if (parameters.dirs !== true && parameters.dirs !== "true") query.set("type", "file");
+        const result = await request("GET", `/api/fs/find?${query}`, undefined, options?.signal);
+        if (!result.response.ok) return failedResult(result);
+        return successfulResult(result, responseItems(result.payload).flatMap(item => {
+          const path = readString(item, "path");
+          return path ? [path] : [];
+        }));
+      },
     },
     mcp: {
       status: async (

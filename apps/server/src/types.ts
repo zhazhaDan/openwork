@@ -96,6 +96,8 @@ export interface ServerConfig {
   hostToken: string;
   configPath?: string;
   opencodeBaseUrl?: string;
+  /** Tron launch settings supplied by the embedding host or CLI. */
+  localTron?: { bin: string; source: "env"; cwd?: string };
   /**
    * Bootstrap snapshot of supplied global/workspace engine URLs, before managed URL hydration.
    * External engines do not share this host's history database; never auto-select local v2 for them.
@@ -139,6 +141,7 @@ export interface ServerConfig {
 }
 
 export interface Capabilities {
+  session?: { deleteMessage: boolean; diff: "patch" | "text" };
   schemaVersion: number;
   serverVersion: string;
   opencodeVersion: string;

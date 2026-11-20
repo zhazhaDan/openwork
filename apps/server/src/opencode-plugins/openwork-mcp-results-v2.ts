@@ -1,5 +1,5 @@
 import { mcpToolId } from "../opencode-v2-mcp-readiness.js";
-import { nativeDiscoveryCode } from "./openwork-codemode-discovery-v2.js";
+import { brandedNativeToolCode, nativeDiscoveryCode } from "./openwork-codemode-discovery-v2.js";
 
 type Registration = { dispose(): Promise<void> };
 type CallEvent = { readonly tool: string; readonly messageID: string; readonly id: string };
@@ -308,8 +308,10 @@ export default {
       }
     });
     const before = await context.tool.hook("execute.before", event => {
-      if (!rootSearch && event.tool === "execute" && isRecord(event.input) && typeof event.input.code === "string") {
-        event.input = { ...event.input, code: nativeDiscoveryCode(event.input.code, server => toolIds.has(mcpToolId(server, "search"))) };
+      if (event.tool === "execute" && isRecord(event.input) && typeof event.input.code === "string") {
+        let code = brandedNativeToolCode(event.input.code);
+        if (!rootSearch) code = nativeDiscoveryCode(code, server => toolIds.has(mcpToolId(server, "search")));
+        if (code !== event.input.code) event.input = { ...event.input, code };
       }
       collector.before(event);
     });

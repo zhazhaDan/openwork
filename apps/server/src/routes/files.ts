@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { open, realpath, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -965,6 +965,55 @@ export function registerFileRoutes(options: RegisterFileRoutesOptions): void {
     });
 
     return jsonResponse({ session: serializeFileSession(session) });
+  });
+
+  addRoute(routes, "POST", "/files/sessions/:sessionId/renew", "client", async ctx => {
+    const { session } = resolveFileSession(ctx, ctx.params.sessionId);
+    const body = await readJsonBody(ctx.request);
+    const renewed = fileSessions.renew(session.id, parseFileSessionTtlMs(body.ttlSeconds));
+    if (!renewed) throw new ApiError(404, "file_session_not_found", "File session not found");
+    return jsonResponse({ session: serializeFileSession(renewed) });
+  });
+
+  addRoute(routes, "GET", "/files/sessions/:sessionId/catalog/events", "client", async ctx => {
+    const { workspace } = resolveFileSession(ctx, ctx.params.sessionId);
+    const raw = ctx.url.searchParams.get("since");
+    const since = raw === null ? 0 : Number(raw);
+    if (!Number.isSafeInteger(since) || since < 0) throw new ApiError(400, "invalid_cursor", "Invalid catalog cursor");
+    return jsonResponse(fileSessions.listWorkspaceEvents(workspace.id, since));
+  });
+
+  addRoute(routes, "POST", "/files/sessions/:sessionId/read-batch", "client", async ctx => {
+    const { workspace } = resolveFileSession(ctx, ctx.params.sessionId);
+    const body = await readJsonBody(ctx.request);
+    if (!Array.isArray(body.paths) || body.paths.length > FILE_SESSION_MAX_BATCH_ITEMS
+      || !body.paths.every((path): path is string => typeof path === "string")) {
+      throw new ApiError(400, "invalid_paths", "Provide at most 64 file paths");
+    }
+    const root = await realpath(workspace.path);
+    const items: Array<Record<string, unknown>> = [];
+    for (const requested of body.paths) {
+      try {
+        const path = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
+        const absolute = await realpath(resolveSafeChildPath(root, path));
+        resolveSafeChildPath(root, absolute);
+        const handle = await open(absolute, "r");
+        try {
+          const info = await handle.stat();
+          if (!info.isFile()) throw new ApiError(404, "file_not_found", "File not found");
+          if (info.size > FILE_SESSION_MAX_FILE_BYTES) throw new ApiError(413, "file_too_large", "File exceeds size limit");
+          const buffer = Buffer.alloc(info.size + 1);
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          if (bytesRead > FILE_SESSION_MAX_FILE_BYTES) throw new ApiError(413, "file_too_large", "File exceeds size limit");
+          items.push({ ok: true, path, kind: "file", bytes: bytesRead, updatedAt: info.mtimeMs,
+            revision: fileRevision(info), contentBase64: buffer.subarray(0, bytesRead).toString("base64") });
+        } finally { await handle.close(); }
+      } catch (error) {
+        items.push({ ok: false, path: requested, code: error instanceof ApiError ? error.code : "read_failed",
+          message: error instanceof ApiError ? error.message : "Unable to read file" });
+      }
+    }
+    return jsonResponse({ items });
   });
 
   addRoute(routes, "DELETE", "/files/sessions/:sessionId", "client", async (ctx) => {

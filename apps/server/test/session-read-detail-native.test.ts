@@ -68,7 +68,7 @@ test("session.read detail full returns what the real v2 engine stores", { timeou
   const call = async (args: Record<string, unknown>): Promise<unknown> => {
     const response = await fetch(bridge.url, { method: "POST",
       headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "openwork_query", input: { id: "session.read", args: { workspaceId: "ws_detail", sessionId: "ses_detail", ...args } } }),
+      body: JSON.stringify({ name: "wudong_query", input: { id: "session.read", args: { workspaceId: "ws_detail", sessionId: "ses_detail", ...args } } }),
       signal: AbortSignal.timeout(60_000),
     });
     assert.equal(response.status, 200);

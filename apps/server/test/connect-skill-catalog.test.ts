@@ -10,7 +10,7 @@ import {
   readOpenWorkConnectSkillIndex,
   resetOpenWorkConnectSkillCatalogCacheForTests,
 } from "../src/connect-skill-catalog.js";
-import { writeConnectCloudMcp } from "../src/connect-state.js";
+import { writeConnectCloudMcp, writeConnectState } from "../src/connect-state.js";
 import type { ServerConfig } from "../src/types.js";
 
 const digest = (text: string) => `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
@@ -89,6 +89,7 @@ describe("readOpenWorkConnectSkillContent", () => {
       startedAt: Date.now(), tokenSource: "generated", hostTokenSource: "generated", logFormat: "json", logRequests: false,
     };
     await writeConnectCloudMcp(config, { type: "remote", url: "https://den.test/mcp/agent" });
+    await writeConnectState(config, { connectEnabled: true });
     resetOpenWorkConnectSkillCatalogCacheForTests();
   });
 
@@ -105,6 +106,19 @@ describe("readOpenWorkConnectSkillContent", () => {
       expect(await readOpenWorkConnectSkillContent(config, crmUrl, den.fetcher)).toBe(crmBody);
     }
     expect(den.reads).toEqual([crmUrl, crmUrl, crmUrl]);
+  });
+
+  test("disabled Connect makes no Cloud request even when a stale config remains", async () => {
+    await writeConnectState(config, { connectEnabled: false });
+    let requests = 0;
+    const fetcher = async () => {
+      requests += 1;
+      throw new Error("disabled Connect attempted Cloud egress");
+    };
+    expect(await readOpenWorkConnectSkillIndex(config, fetcher)).toEqual({ skills: [] });
+    expect(await readOpenWorkConnectSkillContent(config, crmUrl, fetcher)).toBeNull();
+    expect(await readOpenWorkConnectSkillContents(config, [crmUrl], {}, fetcher)).toEqual(new Map());
+    expect(requests).toBe(0);
   });
 
   test("does not re-read a body that failed its digest on every refresh", async () => {
@@ -153,6 +167,7 @@ describe("incremental sync with Den", () => {
       startedAt: Date.now(), tokenSource: "generated", hostTokenSource: "generated", logFormat: "json", logRequests: false,
     };
     await writeConnectCloudMcp(config, { type: "remote", url: "https://den.test/mcp/agent" });
+    await writeConnectState(config, { connectEnabled: true });
     resetOpenWorkConnectSkillCatalogCacheForTests();
   });
 

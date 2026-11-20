@@ -13,7 +13,7 @@ const entry = new URL("./server.ts", import.meta.url).href
 const broker = new URL("./desktop-credential-channel.ts", import.meta.url).href
 
 for (const runtime of [process.execPath, ...(process.execPath.endsWith("/bun") ? [] : ["bun"])]) {
-  test(`${runtime}: one-shot channel closes before setup and remains private across Locations/reloads`, async t => {
+  test(`${runtime}: one-shot channel remains private across Locations/reloads`, async t => {
     const root = await mkdtemp(join(tmpdir(), "openwork-channel-test-"))
     t.after(() => rm(root, { recursive: true, force: true }))
     const brokerPath = join(root, "broker.cjs")
@@ -27,7 +27,6 @@ for (const runtime of [process.execPath, ...(process.execPath.endsWith("/bun") ?
       assert.ok(!initial.includes(${JSON.stringify(capability)}));
       if (process.platform === "linux") assert.ok(!readFileSync("/proc/self/environ", "utf8").includes(${JSON.stringify(capability)}));
       const plugin = (await import(${JSON.stringify(entry)})).default;
-      assert.throws(() => fstatSync(3), /EBADF/);
       const { fetchDesktopSession } = await import(${JSON.stringify(broker)});
       // Separate ESM copies (matching native Location/source graphs) must share
       // the native broker without a global credential getter or another fd read.
@@ -44,6 +43,7 @@ for (const runtime of [process.execPath, ...(process.execPath.endsWith("/bun") ?
         const read = location === 1 ? otherGraph.fetchDesktopSession : fetchDesktopSession;
         assert.equal((await read(fetcher, ${JSON.stringify(endpoint)})).status, 200);
       }
+      assert.throws(() => fstatSync(3), /EBADF/);
       assert.equal(reads, 3);
       assert.equal(await fetchDesktopSession(fetcher, "http://127.0.0.1:5678/steal"), null);
       const shell = spawnSync(process.env.SHELL || "/bin/sh", ["-c", "env"], { encoding: "utf8" });
@@ -72,5 +72,36 @@ for (const runtime of [process.execPath, ...(process.execPath.endsWith("/bun") ?
     assert.equal(code, 0, errors)
     assert.equal(channelError, undefined, `credential delivery failed: ${channelError?.message ?? ""}`)
     assert.match(output, /private-channel-ok/)
+  })
+
+  test(`${runtime}: an open credential channel does not block plugin activation`, async t => {
+    const root = await mkdtemp(join(tmpdir(), "openwork-channel-activation-test-"))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const brokerPath = join(root, "broker.cjs")
+    await writeFile(brokerPath, providerCredentialBrokerSource)
+    const script = `
+      const plugin = (await import(${JSON.stringify(entry)})).default;
+      console.log("plugin-loaded");
+      const { fetchDesktopSession } = await import(${JSON.stringify(broker)});
+      const response = await fetchDesktopSession(async () => new Response("null"), ${JSON.stringify(endpoint)});
+      if (!plugin || response?.status !== 200) process.exitCode = 1;
+    `
+    const env: Record<string, string | undefined> = { ...process.env, OPENWORK_PROVIDER_SESSION_FD: "3", OPENWORK_PROVIDER_SESSION_BROKER: brokerPath }
+    const child = spawn(runtime, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "pipe", "pipe"] })
+    assert.ok(child.stdout && child.stderr)
+    const channel = child.stdio[3]
+    assert.ok(channel && "end" in channel)
+    let output = ""
+    let errors = ""
+    child.stdout.on("data", chunk => {
+      output += String(chunk)
+      if (output.includes("plugin-loaded")) channel.end(JSON.stringify({ endpoint, token: capability }))
+    })
+    child.stderr.on("data", chunk => { errors += String(chunk) })
+    const timeout = setTimeout(() => child.kill(), 5_000)
+    const [code] = await once(child, "close")
+    clearTimeout(timeout)
+    assert.equal(code, 0, errors)
+    assert.match(output, /plugin-loaded/)
   })
 }

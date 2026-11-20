@@ -6,6 +6,7 @@ import { readJsoncFile } from "./jsonc.js";
 import { opencodeConfigPath } from "./workspace-files.js";
 import { validateMcpConfig, validateMcpName, validateUserMcpName } from "./validators.js";
 import {
+  readEffectiveRuntimeOpencodeConfig,
   readRuntimeOpencodeConfig,
   runtimeMcpMap,
   writeRuntimeOpencodeConfig,
@@ -50,7 +51,8 @@ export function resolveGlobalOpenCodeConfigPath(input?: {
 }
 
 function getMcpConfig(config: Record<string, unknown>): Record<string, Record<string, unknown>> {
-  const mcp = config.mcp;
+  const raw = config.mcp;
+  const mcp = isRecord(raw) && isRecord(raw.servers) ? raw.servers : raw;
   if (!isRecord(mcp)) return {};
   const output: Record<string, Record<string, unknown>> = {};
   for (const [name, value] of Object.entries(mcp)) {
@@ -475,7 +477,7 @@ function isMcpDisabledByTools(config: Record<string, unknown>, name: string): bo
 }
 
 export async function listMcp(serverConfig: ServerConfig, workspaceId: string, workspaceRoot: string): Promise<McpItem[]> {
-  return listMcpFromRuntimeSnapshot(workspaceRoot, await readRuntimeOpencodeConfig(serverConfig, workspaceId));
+  return listMcpFromRuntimeSnapshot(workspaceRoot, await readEffectiveRuntimeOpencodeConfig(serverConfig, workspaceId));
 }
 
 export type McpConfigCollision = {

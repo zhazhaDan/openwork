@@ -80,6 +80,13 @@ export class FileSessionStore {
     return this.sessions.delete(sessionId);
   }
 
+  renew(sessionId: string, ttlMs: number): FileSessionRecord | null {
+    const session = this.get(sessionId);
+    if (!session) return null;
+    session.expiresAt = Date.now() + ttlMs;
+    return session;
+  }
+
   recordWorkspaceEvent(input: {
     workspaceId: string;
     type: FileSessionEventType;

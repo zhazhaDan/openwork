@@ -1,3 +1,4 @@
+import { serveTronCompatibility, translateTronGlobalEvents } from "./tron-compat.js";
 import { cloudComputerCall, cloudComputerFor, cloudComputerJson, startCloudComputerBridge } from "./cloud-computer.js";
 import { createV2SessionHomes, nativeSession, nativeSessionDirectory } from "./opencode-v2-session-home.js";
 import { createNativeCloudMcpResolver, createRoutedCloudMcpRegistrar } from "./cloud-mcp-v2.js";
@@ -72,7 +73,7 @@ import {
   MCP_APP_SANDBOX_PROXY_SCRIPT,
   mcpAppSandboxPageHeaders,
 } from "./mcp-app-sandbox.js";
-import { deleteSkill, listSkills, renderSkillContentForResponse, upsertSkill } from "./skills.js";
+import { deleteSkill, listGlobalSkills, listSkills, renderSkillContentForResponse, upsertSkill } from "./skills.js";
 import { deleteCommand, listCommands, repairCommands, upsertCommand } from "./commands.js";
 import { ApiError, formatError } from "./errors.js";
 import { unexpectedApiError, watchDiskSpace } from "./disk-space.js";
@@ -801,6 +802,8 @@ export async function startServer(
 ): Promise<ServeResult & {
   completeManagedEngineStartup: () => Promise<void>;
   setEngineForcePolicy: EngineV2Preview["setForcePolicy"];
+  readyLocalTron: () => Promise<void>;
+  localTronStatus: EngineV2Preview["status"];
 }> {
   let managedEngineReady = options.deferManagedEngineStartup !== true;
   let stopped = false;
@@ -912,7 +915,7 @@ export async function startServer(
     logger,
     cloudProviderSync,
     engineV2Preview,
-    () => managedEngineReady,
+    () => managedEngineReady && (!config.localTron || engineV2Preview.status().running),
     anonymousInference,
     fileSendApprovals,
   );
@@ -1044,6 +1047,9 @@ export async function startServer(
           await managedDesktopPolicy(config).assertRequest(request, mount.restPath, true);
           await anonymousInference.assertTaskAccess(request, mount.restPath);
           const workspace = await resolveWorkspaceWithoutBootstrap(config, mount.workspaceId);
+          if (config.localTron && request.method === "GET" && /^\/opencode2\/api\/agent(?:\/|$)/.test(mount.restPath)) {
+            await engineV2Preview.syncEmployeeAgents();
+          }
           const connection = engineV2Preview.connection();
           if (!connection) {
             return finalize(jsonResponse({ error: "engine_v2_preview_not_running" }, 503));
@@ -1108,6 +1114,56 @@ export async function startServer(
 
       if (request.method === "OPTIONS") {
         return finalize(new Response(null, { status: 204 }));
+      }
+
+      // Wudong retains its HTTP contract while all engine operations use native v2.
+      const tronLegacyMount = parseWorkspaceOpencodeMount(url.pathname) ?? parseWorkspaceMount(url.pathname);
+      const tronSemanticMount = /^\/workspace\/([^/]+)(\/sessions(?:\/.*)?)$/.exec(url.pathname);
+      const tronPath = tronSemanticMount?.[2] ?? tronLegacyMount?.restPath ?? url.pathname;
+      if (config.localTron && (tronPath === "/sessions" || tronPath.startsWith("/sessions/")
+        || tronPath === "/opencode" || tronPath.startsWith("/opencode/"))) {
+        authMode = "client";
+        try {
+          const actor = await requireClient(request, config, tokens);
+          assertOpencodeProxyAllowed(actor, request.method, tronPath.replace(/^\/sessions(?=\/|$)/, "/opencode/session"));
+          const workspaceId = tronSemanticMount?.[1] ?? tronLegacyMount?.workspaceId ?? config.workspaces[0]?.id;
+          if (!workspaceId) throw new ApiError(404, "workspace_not_found", "Workspace not found");
+          const workspace = await resolveWorkspaceWithoutBootstrap(config, decodeURIComponent(workspaceId));
+          if (tronPath === "/opencode/global/event") {
+            const connection = engineV2Preview.connection();
+            if (!connection) throw new ApiError(503, "tron_not_running", "Tron is starting");
+            const response = await loopbackFetch(`${connection.url}/api/event`, {
+              headers: { authorization: `Basic ${Buffer.from(`${connection.username}:${connection.password}`).toString("base64")}`, accept: "text/event-stream" },
+              signal: request.signal,
+            });
+            return finalize(translateTronGlobalEvents(response, request.signal, async (sessionId) => {
+              const session = await loopbackFetch(`${connection.url}/api/session/${encodeURIComponent(sessionId)}`, {
+                headers: { authorization: `Basic ${Buffer.from(`${connection.username}:${connection.password}`).toString("base64")}` },
+                signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
+              });
+              if (!session.ok) return null;
+              return nativeSessionDirectory(await session.json());
+            }));
+          }
+          const nativeBaseUrl = `${url.origin}/workspace/${encodeURIComponent(workspace.id)}/opencode2`;
+          const nativeFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = (input, init) => {
+            const forwarded = new Request(input, init);
+            // Re-enter the native proxy so ownership, scope and managed policy apply.
+            const headers = new Headers(forwarded.headers);
+            for (const key of ["authorization", "x-openwork-host-token", "x-openwork-client-id"]) {
+              const value = request.headers.get(key);
+              if (value) headers.set(key, value); else headers.delete(key);
+            }
+            return Promise.resolve(serverOptions.fetch(new Request(forwarded, { headers })));
+          };
+          return finalize(await serveTronCompatibility({ request, path: tronPath, directory: workspace.path, nativeBaseUrl, nativeFetch,
+            hostAuthorized: request.headers.get("x-openwork-host-token") === config.hostToken }));
+        } catch (error) {
+          if (!(error instanceof ApiError)) recordUnhandledErrorCause(error);
+          const apiError = error instanceof ApiError ? error : unexpectedApiError(error);
+          recordApiError(apiError);
+          return finalize(jsonResponse(formatError(apiError), apiError.status));
+        }
       }
 
       const canonicalOpencodeMount = parseWorkspaceOpencodeMount(url.pathname);
@@ -1333,6 +1389,8 @@ export async function startServer(
 
   return {
     ...server,
+    readyLocalTron: () => engineV2Preview.ready(),
+    localTronStatus: () => engineV2Preview.status(),
     setEngineForcePolicy: (policy) => engineV2Preview.setForcePolicy(policy),
     completeManagedEngineStartup: async () => {
       if (managedEngineReady) return;
@@ -1620,7 +1678,13 @@ async function forwardOpencodeV2Request(input: {
     }
     if (!isRecord(sessionInput)) throw new ApiError(400, "invalid_body", "Expected a JSON object");
     // Unlike reads, v2 session creation binds its location from the body.
-    body = JSON.stringify({ ...sessionInput, location: { directory: input.workspace.path } });
+    const requestedLocation = isRecord(sessionInput.location) ? sessionInput.location.directory : undefined;
+    // The desktop host owns task worktrees; conversation ownership stays in
+    // this workspace while the native session executes in its task directory.
+    const executionDirectory = input.request.headers.get("x-openwork-host-token") === input.config.hostToken
+      && typeof requestedLocation === "string" && requestedLocation.trim()
+      ? requestedLocation : input.workspace.path;
+    body = JSON.stringify({ ...sessionInput, location: { directory: executionDirectory } });
     headers.delete("content-length");
     headers.set("content-type", "application/json");
   }
@@ -2587,6 +2651,7 @@ function buildCapabilities(config: ServerConfig): Capabilities {
     serverVersion: SERVER_VERSION,
     opencodeVersion: OPENCODE_VERSION,
     providerSync: true,
+    session: { deleteMessage: !config.localTron, diff: config.localTron ? "patch" : "text" },
     skills: { read: true, write: writeEnabled, source: "openwork" },
     plugins: { read: true, write: writeEnabled },
     mcp: { read: true, write: writeEnabled },
@@ -4010,7 +4075,15 @@ function createRoutes(
     readJsonBody,
     requireClientScope,
     resolveWorkspace,
+    syncWorkspaceConfig: async (routeConfig, workspace) => {
+      if (routeConfig.localTron) await engineV2Preview.syncWorkspaceConfig(workspace.id, workspace.path);
+      else await reloadOpencodeEngine(routeConfig, workspace, engineMcpServerState);
+    },
     reloadOpencodeEngine: async (routeConfig, workspace) => {
+      if (routeConfig.localTron) {
+        await engineV2Preview.reloadWorkspace(workspace.id, workspace.path);
+        return;
+      }
       // Explicit reloads also follow provider credential writes, which are not
       // part of the runtime-config fingerprint used by background syncs.
       await reloadOpencodeEngine(routeConfig, workspace, engineMcpServerState, { reason: "operation_route", manual: true });
@@ -4107,6 +4180,11 @@ function createRoutes(
     }
     const result = await listPlugins(config, workspace.id, workspace.path, false);
     return jsonResponse(result);
+  });
+
+  addRoute(routes, "GET", "/skills/global", "client", async () => {
+    const items = await listGlobalSkills();
+    return jsonResponse({ items });
   });
 
   addRoute(routes, "GET", "/workspace/:id/skills", "client", async (ctx) => {

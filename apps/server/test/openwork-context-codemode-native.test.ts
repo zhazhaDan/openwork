@@ -49,8 +49,8 @@ test("the pinned native engine discovers and runs OpenWork group queries and com
       if (!results.length) code = 'return search({query:"OpenWork sidebar groups",limit:20});';
       else if (results.length === 1) {
         const catalog = catalogSchema.parse(unwrap(results[0]?.content));
-        const query = catalog.items.find(item => item.path.endsWith(".openwork_query"));
-        const command = catalog.items.find(item => item.path.endsWith(".openwork_execute"));
+        const query = catalog.items.find(item => item.path.endsWith(".wudong_query"));
+        const command = catalog.items.find(item => item.path.endsWith(".wudong_execute"));
         assert.ok(query, JSON.stringify(catalog)); assert.ok(command, JSON.stringify(catalog));
         code = `const decode = value => typeof value === "string" ? JSON.parse(value) : value;
           const before = decode(await ${query.path}({id:"session.group.list",args:{workspaceId:"ws1"}}));

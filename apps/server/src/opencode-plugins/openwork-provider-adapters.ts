@@ -170,7 +170,7 @@ function affordance(input: {
 }
 
 function sessionContribution(): OpenworkFeatureContribution {
-  const provider: OpenworkProviderRef = { id: "openwork-server", kind: "builtin" };
+  const provider: OpenworkProviderRef = { id: "wudong-server", kind: "builtin" };
   return {
     featureId: "sessions",
     provider,
@@ -279,7 +279,7 @@ function sessionContribution(): OpenworkFeatureContribution {
 }
 
 function sessionGroupContribution(): OpenworkFeatureContribution {
-  const provider: OpenworkProviderRef = { id: "openwork-server", kind: "builtin" };
+  const provider: OpenworkProviderRef = { id: "wudong-server", kind: "builtin" };
   const workspaceId = argument("workspaceId", "string", false, "Optional workspace id or name. Defaults to the workspace of the session involved.");
   return {
     featureId: "session-groups",

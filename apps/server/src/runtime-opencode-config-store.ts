@@ -1,5 +1,6 @@
 import { desktopConfigSchema, type DesktopConfig } from "@openwork/types/den/desktop-policies-runtime";
 import { existsSync } from "node:fs";
+import { providerConfigFingerprint } from "./provider-config-templates.js";
 import { importNodeSqlite, runtimeDbPath } from "./runtime-db.js";
 import type { ServerConfig } from "./types.js";
 import { createWorkspaceKvStore, isRecord } from "./workspace-kv-store.js";
@@ -7,6 +8,8 @@ import { createWorkspaceKvStore, isRecord } from "./workspace-kv-store.js";
 export { runtimeDbPath, runtimeStorageDir } from "./runtime-db.js";
 
 export type RuntimeOpencodeConfig = {
+  /** Host import ownership; fingerprints contain no copied credentials. */
+  tronImport?: { provider: Record<string, string>; mcp: Record<string, string> };
   managedPolicy?: DesktopConfig;
   /**
    * The organization's Prompts for the signed-in member, already in order and
@@ -47,6 +50,9 @@ function normalizeRuntimeOpencodeConfig(value: unknown): RuntimeOpencodeConfig {
   const provider = isRecord(value.provider) ? value.provider : undefined;
   const managedPrompt = typeof value.managedPrompt === "string" && value.managedPrompt.trim() ? value.managedPrompt : undefined;
   return {
+    ...(isRecord(value.tronImport) ? { tronImport: {
+      provider: stringMap(value.tronImport.provider), mcp: stringMap(value.tronImport.mcp),
+    } } : {}),
     ...(defaultAgent ? { default_agent: defaultAgent } : {}),
     ...(value.managedPolicy !== undefined ? { managedPolicy: desktopConfigSchema.parse(value.managedPolicy) } : {}),
     ...(managedPrompt ? { managedPrompt } : {}),
@@ -56,6 +62,45 @@ function normalizeRuntimeOpencodeConfig(value: unknown): RuntimeOpencodeConfig {
     ...(externalDirectory ? { permission: { external_directory: externalDirectory } } : {}),
     ...(provider ? { provider } : {}),
   };
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  return isRecord(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+}
+
+function fingerprint(value: unknown): string {
+  return providerConfigFingerprint(value);
+}
+
+/** Remove only unchanged values previously imported by the host, atomically with ownership. */
+export function reconcileTronRuntimeConfig(config: ServerConfig, workspaceId: string, incoming: {
+  provider: Record<string, unknown>; mcp: Record<string, Record<string, unknown>>;
+}) {
+  return updateRuntimeConfig(config, workspaceId, current => {
+    const merge = <T>(existing: Record<string, T>, desired: Record<string, T>, owned: Record<string, string>) => {
+      const result = { ...existing };
+      const nextOwned: Record<string, string> = {};
+      for (const [name, hash] of Object.entries(owned)) {
+        if (name in result && fingerprint(result[name]) === hash) delete result[name];
+      }
+      for (const [name, value] of Object.entries(desired)) {
+        if (!(name in existing) && owned[name] === fingerprint(value)) {
+          // A deliberate Server deletion wins until the host definition changes.
+          nextOwned[name] = owned[name];
+          continue;
+        }
+        // A Server edit of an imported entry transfers ownership to the Server.
+        if (name in result && fingerprint(result[name]) !== fingerprint(value)) continue;
+        result[name] = value;
+        nextOwned[name] = fingerprint(value);
+      }
+      return { values: result, owned: nextOwned };
+    };
+    const provider = merge(current.provider ?? {}, incoming.provider, current.tronImport?.provider ?? {});
+    const mcp = merge(current.mcp ?? {}, incoming.mcp, current.tronImport?.mcp ?? {});
+    return { ...current, provider: provider.values, mcp: mcp.values,
+      tronImport: { provider: provider.owned, mcp: mcp.owned } };
+  });
 }
 
 function parseRuntimeOpencodeConfig(configJson: string): RuntimeOpencodeConfig {
@@ -332,7 +377,7 @@ export async function migrateWorkspaceRuntimeConfigToEngineGlobal(
       runtimePluginList(row.value).length > 0
       || runtimeDisabledProviderList(row.value).length > 0
       || Object.keys(runtimeExternalDirectory(row.value)).length > 0
-      || Object.keys(runtimeProviderMap(row.value)).length > 0
+      || (!config.localTron && Object.keys(runtimeProviderMap(row.value)).length > 0)
     ),
   );
   if (workspaceRows.length === 0 || config.readOnly) return { changed: false };
@@ -359,7 +404,7 @@ export async function migrateWorkspaceRuntimeConfigToEngineGlobal(
     };
     const provider = {
       ...rowsByAge.reduce<Record<string, unknown>>(
-        (union, row) => ({ ...union, ...runtimeProviderMap(row.value) }),
+        (union, row) => config.localTron ? union : ({ ...union, ...runtimeProviderMap(row.value) }),
         {},
       ),
       ...runtimeProviderMap(current),
@@ -382,6 +427,7 @@ export async function migrateWorkspaceRuntimeConfigToEngineGlobal(
       const { external_directory: _externalDirectory, ...permissionRest } = isRecord(permission) ? permission : {};
       return {
         ...rest,
+        ...(config.localTron && _provider ? { provider: _provider } : {}),
         ...(Object.keys(permissionRest).length ? { permission: permissionRest } : {}),
       };
     });
